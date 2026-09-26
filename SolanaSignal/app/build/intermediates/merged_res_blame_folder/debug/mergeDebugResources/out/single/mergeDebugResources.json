@@ -1,0 +1,14 @@
+[
+    {
+        "merged": "com.solanasignal.app-debug-62:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "com.solanasignal.app-main-64:/drawable/ic_launcher_foreground.xml"
+    },
+    {
+        "merged": "com.solanasignal.app-debug-62:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "com.solanasignal.app-main-64:/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+        "merged": "com.solanasignal.app-debug-62:/xml_backup_rules.xml.flat",
+        "source": "com.solanasignal.app-main-64:/xml/backup_rules.xml"
+    }
+]

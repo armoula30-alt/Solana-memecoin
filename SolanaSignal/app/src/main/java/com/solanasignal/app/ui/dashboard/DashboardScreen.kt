@@ -59,6 +59,17 @@ fun DashboardScreen(vm: AppViewModel) {
                     }
                     Spacer(Modifier.height(8.dp))
                     Text("PumpPortal: ${connectionLabel(connection)}")
+                    val solPrice by vm.solUsdPrice.collectAsState()
+                    Text(
+                        "SOL/USD: " + (solPrice?.let { "$%.2f".format(it) } ?: "fetching\u2026"),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (!mockMode && solPrice == null && running) {
+                        Text(
+                            "Market cap / liquidity show UNKNOWN until the first SOL/USD price fetch completes (usually a few seconds).",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
             }
         }

@@ -5,8 +5,10 @@ package com.solanasignal.app.data.pumpportal
  * only ever consumes these - never raw PumpPortal JSON. This isolates the app from
  * upstream API changes (spec #39, #40).
  *
- * IMPORTANT: fields are nullable when PumpPortal does not reliably provide them.
- * Parsers must never invent/fabricate a value for a missing field (spec #41).
+ * IMPORTANT: PumpPortal reports on-chain quantities in SOL, not USD (confirmed
+ * fields: marketCapSol, vSolInBondingCurve, vTokensInBondingCurve, solAmount,
+ * tokenAmount - see PumpPortalEventParser.kt for sources). USD conversion happens
+ * one layer up, in ScannerOrchestrator, using SolPriceProvider - never invented here.
  */
 
 data class NormalizedTokenCreatedEvent(
@@ -16,7 +18,10 @@ data class NormalizedTokenCreatedEvent(
     val creator: String?,
     val uri: String?,
     val createdAtEpochMs: Long?,
-    val initialMarketCapUsd: Double?,
+    val marketCapSol: Double?,
+    val vSolInBondingCurve: Double?,       // SOL reserve in the bonding curve -> used as liquidity proxy
+    val vTokensInBondingCurve: Double?,
+    val bondingCurveKey: String?,          // pool identifier - used to deep-link into Photon
     val receivedAtEpochMs: Long
 )
 
@@ -28,24 +33,29 @@ data class NormalizedMigrationEvent(
 
 data class NormalizedTradeEvent(
     val mint: String,
-    val signature: String?,          // official identifier when provided
+    val signature: String?,
     val side: TradeSide,
     val trader: String?,
-    val amountUsd: Double?,
-    val priceUsd: Double?,
+    val solAmount: Double?,                // trade size in SOL
+    val tokenAmount: Double?,
+    val vSolInBondingCurve: Double?,
+    val vTokensInBondingCurve: Double?,
+    val marketCapSol: Double?,
     val timestampEpochMs: Long
 ) {
+    /** price in SOL per token, derived from bonding-curve reserves; null if reserves not reported. */
+    val priceSol: Double?
+        get() = if (vSolInBondingCurve != null && vTokensInBondingCurve != null && vTokensInBondingCurve > 0)
+            vSolInBondingCurve / vTokensInBondingCurve else null
+
     /**
      * Duplicate protection (spec #12): prefer the real signature. If PumpPortal
      * does not supply one for this event type, fall back to a *documented*
      * deterministic key built only from fields actually present on the event -
-     * never a random or invented id. This means two genuinely distinct trades
-     * that happen to share mint+trader+price+timestampMs could collide; that
-     * tradeoff is intentional and documented rather than risking false dedupe
-     * against fabricated data.
+     * never a random or invented id.
      */
     fun dedupeKey(): String =
-        signature ?: "fallback:$mint:${trader ?: "?"}:${priceUsd ?: "?"}:${amountUsd ?: "?"}:$timestampEpochMs"
+        signature ?: "fallback:$mint:${trader ?: "?"}:${solAmount ?: "?"}:${tokenAmount ?: "?"}:$timestampEpochMs"
 }
 
 enum class TradeSide { BUY, SELL }

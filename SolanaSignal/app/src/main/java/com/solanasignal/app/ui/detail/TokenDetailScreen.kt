@@ -40,6 +40,7 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
         item {
             DetailCard("Token") {
                 Row("Mint", mint.take(10) + "...")
+                Row("Pool", token?.poolAddress?.take(10)?.plus("...") ?: "UNKNOWN")
                 Row("Creator", token?.creator?.take(10)?.plus("...") ?: "UNKNOWN")
                 Row("Market Cap", token?.marketCapUsd?.let { "$%.0f".format(it) } ?: "UNKNOWN")
                 Row("Liquidity", token?.liquidityUsd?.let { "$%.0f".format(it) } ?: "UNKNOWN")
@@ -75,13 +76,19 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
 
         item {
             Button(
-                onClick = { PhotonLauncher.openForToken(context, mint, token?.symbol) },
+                onClick = { PhotonLauncher.openForToken(context, mint, token?.poolAddress, token?.symbol) },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("OPEN IN PHOTON") }
             Text(
                 "This app does not execute trades. You decide and trade manually in Photon.",
                 style = MaterialTheme.typography.bodySmall
             )
+            if (token?.poolAddress == null) {
+                Text(
+                    "Pool not yet identified for this token \u2014 Photon will open to the homepage instead of this token's page.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
     }
 }

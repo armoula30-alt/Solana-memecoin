@@ -36,6 +36,7 @@ object NotificationHelper {
         context: Context,
         signalId: Long,
         mint: String,
+        poolAddress: String?,
         symbol: String,
         type: SignalType,
         score: Int,
@@ -64,7 +65,7 @@ object NotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val photonIntent = PhotonLauncher.buildOpenIntent(context, mint)
+        val photonIntent = PhotonLauncher.buildOpenIntent(context, mint, poolAddress)
         val photonPending = PendingIntent.getActivity(
             context, (signalId + 1_000_000).toInt(), photonIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE

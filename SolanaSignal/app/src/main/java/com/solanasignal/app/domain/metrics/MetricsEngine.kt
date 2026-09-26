@@ -1,6 +1,5 @@
 package com.solanasignal.app.domain.metrics
 
-import com.solanasignal.app.data.pumpportal.NormalizedTradeEvent
 import com.solanasignal.app.data.pumpportal.TradeSide
 import java.util.concurrent.ConcurrentHashMap
 
@@ -50,12 +49,12 @@ class MetricsEngine {
     private val previousWindowSellers = ConcurrentHashMap<String, MutableMap<Int, Int>>()
     private val firstPriceInWindow = ConcurrentHashMap<String, MutableMap<Int, Double>>()
 
-    fun record(trade: NormalizedTradeEvent) {
-        val list = buffers.getOrPut(trade.mint) { mutableListOf() }
+    fun record(mint: String, side: TradeSide, trader: String?, amountUsd: Double?, priceUsd: Double?, timestampEpochMs: Long) {
+        val list = buffers.getOrPut(mint) { mutableListOf() }
         synchronized(list) {
-            list.add(TradePoint(trade.side, trade.trader, trade.amountUsd, trade.priceUsd, trade.timestampEpochMs))
+            list.add(TradePoint(side, trader, amountUsd, priceUsd, timestampEpochMs))
             // Trim anything older than the largest tracked window to bound memory.
-            val cutoff = trade.timestampEpochMs - WINDOW_5M * 1000L
+            val cutoff = timestampEpochMs - WINDOW_5M * 1000L
             list.removeAll { it.ts < cutoff }
         }
     }

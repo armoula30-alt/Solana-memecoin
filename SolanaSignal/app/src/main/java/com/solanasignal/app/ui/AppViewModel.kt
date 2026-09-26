@@ -20,6 +20,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     val running = orchestrator.running
     val connectionState = orchestrator.connectionState
+    val solUsdPrice = orchestrator.solUsdPrice
 
     val tokens: StateFlow<List<TokenEntity>> =
         db.tokenDao().observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())

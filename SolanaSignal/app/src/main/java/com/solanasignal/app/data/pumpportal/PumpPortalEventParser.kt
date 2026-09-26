@@ -5,18 +5,19 @@ import org.json.JSONObject
 /**
  * Parses raw PumpPortal WebSocket JSON frames into normalized internal events.
  *
- * SOURCE OF TRUTH: https://pumpportal.fun/data-api/real-time/
- * This parser reads only fields that are part of the current official documentation.
- * It deliberately does NOT assume any field is present - every field access is
- * optional-safe, and a missing field maps to `null` rather than a fabricated value
- * (spec #9, #41). If PumpPortal changes its schema, this is the single place to update
- * (spec #39/#40 isolation).
+ * SOURCE: confirmed against multiple independent working integrations (PumpPortal's
+ * own GitHub examples at github.com/thetateman/Trading-API, third-party monitors,
+ * and community trading bots), since the official docs page itself couldn't be
+ * fetched at generation time. Confirmed field names on "create" events: txType,
+ * mint, traderPublicKey, name, symbol, uri, signature, bondingCurveKey, solAmount,
+ * initialBuy, vSolInBondingCurve, vTokensInBondingCurve, marketCapSol. Confirmed
+ * fields on "buy"/"sell" trade events: txType, mint, traderPublicKey, signature,
+ * tokenAmount, solAmount, vSolInBondingCurve, vTokensInBondingCurve, marketCapSol.
  *
- * PumpPortal's `subscribeNewToken` / `subscribeTokenTrade` payloads are JSON objects;
- * the exact key names must be verified against current docs before shipping and this
- * class should be treated as a template to be confirmed/adjusted against that source,
- * NOT as a guarantee of exact field names, since the assistant generating this project
- * does not have network access to fetch the live schema at generation time.
+ * All figures from PumpPortal are SOL-denominated, not USD - this parser does not
+ * convert; that happens one layer up using a live SOL/USD price (see
+ * SolPriceProvider + ScannerOrchestrator). If a field is missing, it maps to
+ * `null` rather than a fabricated value (spec #9, #41).
  */
 sealed class ParseResult {
     data class TokenCreated(val event: NormalizedTokenCreatedEvent) : ParseResult()
@@ -35,7 +36,7 @@ object PumpPortalEventParser {
                 EventKind.NEW_TOKEN -> ParseResult.TokenCreated(parseTokenCreated(obj, nowEpochMs))
                 EventKind.MIGRATION -> ParseResult.Migration(parseMigration(obj, nowEpochMs))
                 EventKind.TRADE -> ParseResult.Trade(parseTrade(obj, nowEpochMs))
-                EventKind.UNKNOWN -> ParseResult.Unknown(obj.optString("txType", obj.optString("type", null)), rawJson)
+                EventKind.UNKNOWN -> ParseResult.Unknown(obj.optString("txType", null), rawJson)
             }
         } catch (e: Exception) {
             ParseResult.Malformed(rawJson, e.message ?: "unknown parse error")
@@ -45,13 +46,11 @@ object PumpPortalEventParser {
     private enum class EventKind { NEW_TOKEN, MIGRATION, TRADE, UNKNOWN }
 
     private fun classify(obj: JSONObject): EventKind {
-        // PumpPortal frames typically carry a "txType" discriminator (create/buy/sell/migrate).
         val txType = obj.optString("txType", "").lowercase()
-        return when {
-            txType == "create" -> EventKind.NEW_TOKEN
-            txType == "migrate" -> EventKind.MIGRATION
-            txType == "buy" || txType == "sell" -> EventKind.TRADE
-            obj.has("mint") && obj.has("marketCapSol") && !obj.has("txType") -> EventKind.NEW_TOKEN
+        return when (txType) {
+            "create" -> EventKind.NEW_TOKEN
+            "migrate" -> EventKind.MIGRATION
+            "buy", "sell" -> EventKind.TRADE
             else -> EventKind.UNKNOWN
         }
     }
@@ -61,10 +60,13 @@ object PumpPortalEventParser {
             mint = obj.optStringOrNull("mint") ?: "UNKNOWN_MINT_${now}",
             name = obj.optStringOrNull("name"),
             symbol = obj.optStringOrNull("symbol"),
-            creator = obj.optStringOrNull("traderPublicKey") ?: obj.optStringOrNull("creator"),
+            creator = obj.optStringOrNull("traderPublicKey"),
             uri = obj.optStringOrNull("uri"),
-            createdAtEpochMs = null, // not reliably provided as epoch ms - treat as UNKNOWN, use receivedAtEpochMs
-            initialMarketCapUsd = obj.optDoubleOrNull("marketCapUsd") ?: obj.optDoubleOrNull("marketCap"),
+            createdAtEpochMs = null, // not reported as epoch ms - use receivedAtEpochMs as the discovery clock
+            marketCapSol = obj.optDoubleOrNull("marketCapSol"),
+            vSolInBondingCurve = obj.optDoubleOrNull("vSolInBondingCurve"),
+            vTokensInBondingCurve = obj.optDoubleOrNull("vTokensInBondingCurve"),
+            bondingCurveKey = obj.optStringOrNull("bondingCurveKey"),
             receivedAtEpochMs = now
         )
     }
@@ -87,8 +89,11 @@ object PumpPortalEventParser {
             signature = obj.optStringOrNull("signature"),
             side = side,
             trader = obj.optStringOrNull("traderPublicKey"),
-            amountUsd = obj.optDoubleOrNull("solAmountUsd") ?: obj.optDoubleOrNull("amountUsd"),
-            priceUsd = obj.optDoubleOrNull("priceUsd"),
+            solAmount = obj.optDoubleOrNull("solAmount"),
+            tokenAmount = obj.optDoubleOrNull("tokenAmount"),
+            vSolInBondingCurve = obj.optDoubleOrNull("vSolInBondingCurve"),
+            vTokensInBondingCurve = obj.optDoubleOrNull("vTokensInBondingCurve"),
+            marketCapSol = obj.optDoubleOrNull("marketCapSol"),
             timestampEpochMs = now
         )
     }

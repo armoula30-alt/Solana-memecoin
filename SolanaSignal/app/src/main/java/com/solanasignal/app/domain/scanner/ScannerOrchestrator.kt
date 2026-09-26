@@ -20,11 +20,14 @@ import org.json.JSONArray
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Wires the full pipeline described in the spec's architecture diagram:
- * PumpPortal -> WebSocketManager -> Token Discovery / Trade Streams -> Metrics
- * -> Safety -> Momentum Score -> Signal Engine -> Android Alert -> (user) -> Photon.
+ * Wires the full pipeline: PumpPortal -> WebSocketManager -> Token Discovery / Trade
+ * Streams -> Metrics -> Safety -> Momentum Score -> Signal Engine -> Android Alert
+ * -> (user) -> Photon. This class does not execute trades.
  *
- * This class does not execute trades. It only detects, analyzes, scores, and alerts.
+ * PumpPortal reports everything in SOL (marketCapSol, vSolInBondingCurve, solAmount,
+ * tokenAmount). SolPriceProvider supplies a live SOL/USD rate so the app can show
+ * the USD figures the spec's filters/UI are defined in; until a price has been
+ * fetched at least once, USD fields stay null/UNKNOWN rather than being guessed.
  */
 class ScannerOrchestrator(
     private val context: Context,
@@ -35,6 +38,7 @@ class ScannerOrchestrator(
     private val safetyEngine = SafetyEngine()
     private val scoringEngine = ScoringEngine()
     private val signalEngine = SignalEngine()
+    private val solPriceProvider = SolPriceProvider()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var mockSource: MockEventSource? = null
@@ -49,15 +53,14 @@ class ScannerOrchestrator(
     val connectionState: StateFlow<ConnectionState>
         get() = webSocketManager?.connectionState ?: MutableStateFlow(ConnectionState.DISCONNECTED).asStateFlow()
 
+    val solUsdPrice: StateFlow<Double?> get() = solPriceProvider.priceUsd
+
     fun start() {
         if (_running.value) return
         _running.value = true
+        solPriceProvider.start(scope)
 
-        if (settings.mockMode.value) {
-            startMock()
-        } else {
-            startLive()
-        }
+        if (settings.mockMode.value) startMock() else startLive()
     }
 
     fun stop() {
@@ -65,6 +68,7 @@ class ScannerOrchestrator(
         mockSource?.stop()
         webSocketManager?.stop()
         webSocketManager = null
+        solPriceProvider.stop()
     }
 
     private fun startLive() {
@@ -80,6 +84,9 @@ class ScannerOrchestrator(
     }
 
     private fun startMock() {
+        // Mock mode fabricates a fake SOL price too, so USD figures aren't stuck on
+        // UNKNOWN while demoing - clearly labeled MOCK MODE in the UI regardless.
+        solPriceProvider.stop()
         val source = MockEventSource(
             onTokenCreated = { event -> scope.launch { handleTokenCreated(event) } },
             onTrade = { event -> scope.launch { handleTrade(event) } }
@@ -87,6 +94,8 @@ class ScannerOrchestrator(
         mockSource = source
         source.start(scope)
     }
+
+    private fun currentSolUsdPrice(): Double? = if (settings.mockMode.value) 180.0 else solPriceProvider.priceUsd.value
 
     private suspend fun handleParseResult(result: ParseResult, nowMs: Long) {
         when (result) {
@@ -100,24 +109,26 @@ class ScannerOrchestrator(
 
     // --- 9. TOKEN DISCOVERY -------------------------------------------------
     private suspend fun handleTokenCreated(event: NormalizedTokenCreatedEvent) {
+        val solPrice = currentSolUsdPrice()
         val token = TokenEntity(
             mint = event.mint,
             name = event.name,
             symbol = event.symbol,
             creator = event.creator,
             uri = event.uri,
+            poolAddress = event.bondingCurveKey,
             createdAtEpochMs = event.createdAtEpochMs,
             firstSeenAtEpochMs = event.receivedAtEpochMs,
-            marketCapUsd = event.initialMarketCapUsd,
-            liquidityUsd = null,
+            marketCapSol = event.marketCapSol,
+            liquiditySol = event.vSolInBondingCurve,
+            marketCapUsd = usd(event.marketCapSol, solPrice),
+            liquidityUsd = usd(event.vSolInBondingCurve, solPrice),
             lastPriceUsd = null,
             lifecycle = "NEW",
             source = if (settings.mockMode.value) "mock" else "pumpportal"
         )
         db.tokenDao().upsert(token)
 
-        // Initial filters (spec #10): age is trivially 0 here, so this always passes the
-        // age check on creation - eligibility is really decided as trades accumulate.
         val maxTracked = maxTrackedForBatteryMode()
         if (trackedMints.size < maxTracked) {
             trackedMints.add(event.mint)
@@ -135,20 +146,34 @@ class ScannerOrchestrator(
         val dedupeKey = event.dedupeKey()
         if (db.tradeDao().existsByDedupeKey(dedupeKey) > 0) return // never process the same trade twice
 
+        val solPrice = currentSolUsdPrice()
+        val amountUsd = usd(event.solAmount, solPrice)
+        val priceUsd = usd(event.priceSol, solPrice)
+
         db.tradeDao().insert(
             TradeEntity(
                 mint = event.mint,
                 dedupeKey = dedupeKey,
                 side = event.side.name,
                 trader = event.trader,
-                amountUsd = event.amountUsd,
-                priceUsd = event.priceUsd,
+                amountUsd = amountUsd,
+                priceUsd = priceUsd,
                 timestamp = event.timestampEpochMs
             )
         )
-        metricsEngine.record(event)
-        event.priceUsd?.let { price ->
-            db.tokenDao().getByMint(event.mint)?.let { db.tokenDao().upsert(it.copy(lastPriceUsd = price)) }
+        // MetricsEngine works in USD internally; feed it the converted amount/price.
+        metricsEngine.record(event.mint, event.side, event.trader, amountUsd, priceUsd, event.timestampEpochMs)
+
+        db.tokenDao().getByMint(event.mint)?.let { token ->
+            db.tokenDao().upsert(
+                token.copy(
+                    lastPriceUsd = priceUsd ?: token.lastPriceUsd,
+                    marketCapSol = event.marketCapSol ?: token.marketCapSol,
+                    liquiditySol = event.vSolInBondingCurve ?: token.liquiditySol,
+                    marketCapUsd = usd(event.marketCapSol, solPrice) ?: token.marketCapUsd,
+                    liquidityUsd = usd(event.vSolInBondingCurve, solPrice) ?: token.liquidityUsd
+                )
+            )
         }
 
         analyzeAndMaybeSignal(event.mint, event.timestampEpochMs)
@@ -160,6 +185,17 @@ class ScannerOrchestrator(
         val windows = metricsEngine.computeAll(mint, nowMs)
         val m5 = windows[300] ?: return
         val m1 = windows[60] ?: return
+
+        // Cache live metrics onto the token row so the Scanner list always shows
+        // current buyer/seller/volume counts, not just whatever was true the last
+        // time a signal happened to be emitted (which could be minutes stale due
+        // to cooldown/dedupe suppression).
+        db.tokenDao().upsert(
+            token.copy(
+                buyers5m = m5.uniqueBuyers, sellers5m = m5.uniqueSellers,
+                buyVolume5mUsd = m5.buyVolumeUsd, sellVolume5mUsd = m5.sellVolumeUsd
+            )
+        )
 
         db.metricsDao().insert(
             MetricsSnapshotEntity(
@@ -176,10 +212,10 @@ class ScannerOrchestrator(
 
         val safety = safetyEngine.evaluate(
             mint = mint,
-            creatorSellVolumeUsdRecent = null, // requires creator-tagged trade attribution not guaranteed by source
+            creatorSellVolumeUsdRecent = null,
             totalVolumeUsdRecent = m5.buyVolumeUsd + m5.sellVolumeUsd,
             migrationState = if (token.lifecycle == "MIGRATED") "MIGRATED" else null,
-            holderConcentrationPct = null, // UNKNOWN unless a reliable holders endpoint is wired in
+            holderConcentrationPct = null,
             liquidityUsd = token.liquidityUsd,
             largestSingleTradeUsd = maxOf(m5.largestBuyUsd, m5.largestSellUsd),
             nowMs = nowMs
@@ -208,7 +244,7 @@ class ScannerOrchestrator(
         )
 
         val config = settings.filterConfig.value
-        val ageSeconds = token.firstSeenAtEpochMs.let { (nowMs - it) / 1000 }
+        val ageSeconds = (nowMs - token.firstSeenAtEpochMs) / 1000
 
         val buyDecision = signalEngine.evaluate(
             mint = mint, ageSeconds = ageSeconds, marketCapUsd = token.marketCapUsd,
@@ -247,7 +283,9 @@ class ScannerOrchestrator(
             )
         )
         if (type == SignalType.BUY || type == SignalType.SELL) {
-            NotificationHelper.showSignalNotification(context, id, token.mint, token.symbol ?: token.mint.take(6), type, score, m5, reasons)
+            NotificationHelper.showSignalNotification(
+                context, id, token.mint, token.poolAddress, token.symbol ?: token.mint.take(6), type, score, m5, reasons
+            )
         }
     }
 
@@ -260,4 +298,7 @@ class ScannerOrchestrator(
         BatteryMode.BALANCED -> 60
         BatteryMode.BATTERY_SAVER -> 20
     }
+
+    private fun usd(solValue: Double?, solPriceUsd: Double?): Double? =
+        if (solValue != null && solPriceUsd != null) solValue * solPriceUsd else null
 }

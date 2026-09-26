@@ -18,13 +18,22 @@ data class TokenEntity(
     val symbol: String?,
     val creator: String?,
     val uri: String?,
+    val poolAddress: String?,       // PumpPortal's bondingCurveKey - used for the Photon deep link
     val createdAtEpochMs: Long?,
     val firstSeenAtEpochMs: Long,
-    val marketCapUsd: Double?,      // null = UNKNOWN
-    val liquidityUsd: Double?,      // null = UNKNOWN
+    val marketCapSol: Double?,      // raw, as reported by PumpPortal
+    val liquiditySol: Double?,      // vSolInBondingCurve - SOL reserve, used as a liquidity proxy
+    val marketCapUsd: Double?,      // converted using live SOL/USD price; null = price not available yet
+    val liquidityUsd: Double?,      // converted; null = price not available yet
     val lastPriceUsd: Double?,
+    // Cached live 5-minute metrics, updated on every trade so the Scanner list shows
+    // current numbers instead of a stale snapshot from the last emitted signal.
+    val buyers5m: Int = 0,
+    val sellers5m: Int = 0,
+    val buyVolume5mUsd: Double = 0.0,
+    val sellVolume5mUsd: Double = 0.0,
     val lifecycle: String,          // e.g. NEW, MIGRATED, TRACKING, STALE, REJECTED
-    val source: String              // "pumpportal"
+    val source: String              // "pumpportal" or "mock"
 )
 
 @Entity(

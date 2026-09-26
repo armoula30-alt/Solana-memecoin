@@ -17,7 +17,7 @@ import com.solanasignal.app.data.room.entities.*
         SignalOutcomeEntity::class,
         SystemEventEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -38,7 +38,8 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "solana_signal.db"
-                ).build().also { instance = it }
+                ).fallbackToDestructiveMigration() // no users/data to preserve yet; add real migrations before release
+                 .build().also { instance = it }
             }
     }
 }

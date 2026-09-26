@@ -19,7 +19,9 @@ fun LiveScannerScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
     val tokens by vm.tokens.collectAsState()
     val signals by vm.signals.collectAsState()
 
-    // Latest signal (if any) per mint, for score/status display on the card.
+    // Latest signal (if any) per mint - used only for the status badge (BUY/SELL/WATCH),
+    // not for the live numbers, since a signal may not have fired recently even though
+    // the token has plenty of live trade activity (cooldown/dedupe suppresses repeats).
     val latestSignalByMint = remember(signals) { signals.groupBy { it.mint }.mapValues { it.value.first() } }
 
     LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -43,7 +45,7 @@ fun LiveScannerScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        MiniStat("B/S", "${signal?.buyers ?: 0} / ${signal?.sellers ?: 0}")
+                        MiniStat("B/S (5m)", "${token.buyers5m} / ${token.sellers5m}")
                         MiniStat("Score", signal?.score?.toString() ?: "\u2014")
                     }
                 }

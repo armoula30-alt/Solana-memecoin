@@ -12,9 +12,11 @@ import kotlin.random.Random
 
 /**
  * MOCK_MODE (spec #49): simulates new-token, trade, and buyer/seller activity so the
- * app is fully demoable without a live PumpPortal connection or API key. Clearly
- * simulated data only - never mixed silently with real data (the UI must show a
- * MOCK MODE badge whenever this source is active).
+ * app is fully demoable without a live PumpPortal connection or API key. Field shapes
+ * mirror the real SOL-denominated PumpPortal payload (marketCapSol, vSolInBondingCurve,
+ * solAmount, tokenAmount) so the same conversion/metrics/scoring code path runs in
+ * both mock and live mode - clearly simulated data only, never mixed silently with
+ * real data (the UI shows a MOCK MODE badge whenever this source is active).
  */
 class MockEventSource(
     private val onTokenCreated: (NormalizedTokenCreatedEvent) -> Unit,
@@ -23,6 +25,9 @@ class MockEventSource(
     private var job: Job? = null
     private val symbols = listOf("PEPE", "WIF", "BONK", "MOON", "FLOKI", "CHAD", "RIZZ", "NYAN")
     private val activeMints = mutableListOf<String>()
+    // Track simple bonding-curve state per mock mint so reserves move realistically.
+    private val vSol = mutableMapOf<String, Double>()
+    private val vTokens = mutableMapOf<String, Double>()
 
     fun start(scope: CoroutineScope) {
         job?.cancel()
@@ -43,12 +48,18 @@ class MockEventSource(
     fun stop() {
         job?.cancel()
         activeMints.clear()
+        vSol.clear()
+        vTokens.clear()
     }
 
     private fun spawnToken() {
         val mint = "MOCK" + Random.nextLong(100000, 999999)
         val symbol = symbols.random() + Random.nextInt(0, 99)
         activeMints.add(mint)
+        val initialSol = Random.nextDouble(20.0, 40.0)      // typical pump.fun starting curve ~30 SOL
+        val initialTokens = Random.nextDouble(900_000_000.0, 1_050_000_000.0)
+        vSol[mint] = initialSol
+        vTokens[mint] = initialTokens
         onTokenCreated(
             NormalizedTokenCreatedEvent(
                 mint = mint,
@@ -57,7 +68,10 @@ class MockEventSource(
                 creator = "MockCreator" + Random.nextInt(1000, 9999),
                 uri = null,
                 createdAtEpochMs = System.currentTimeMillis(),
-                initialMarketCapUsd = Random.nextDouble(5_000.0, 30_000.0),
+                marketCapSol = initialSol * 2.5,
+                vSolInBondingCurve = initialSol,
+                vTokensInBondingCurve = initialTokens,
+                bondingCurveKey = "MockPool$mint",
                 receivedAtEpochMs = System.currentTimeMillis()
             )
         )
@@ -65,14 +79,31 @@ class MockEventSource(
 
     private fun spawnTrade(mint: String) {
         val side = if (Random.nextInt(100) < 60) TradeSide.BUY else TradeSide.SELL
+        val solAmount = Random.nextDouble(0.1, 4.0)
+        var curveSol = vSol[mint] ?: 30.0
+        var curveTokens = vTokens[mint] ?: 1_000_000_000.0
+        val tokenAmount = if (curveTokens > 0) (solAmount / curveSol) * curveTokens * 0.98 else 0.0
+        if (side == TradeSide.BUY) {
+            curveSol += solAmount
+            curveTokens -= tokenAmount
+        } else {
+            curveSol = (curveSol - solAmount).coerceAtLeast(0.5)
+            curveTokens += tokenAmount
+        }
+        vSol[mint] = curveSol
+        vTokens[mint] = curveTokens
+
         onTrade(
             NormalizedTradeEvent(
                 mint = mint,
                 signature = "mock-sig-${Random.nextLong()}",
                 side = side,
                 trader = "MockTrader" + Random.nextInt(1, 500),
-                amountUsd = Random.nextDouble(20.0, 800.0),
-                priceUsd = Random.nextDouble(0.00001, 0.01),
+                solAmount = solAmount,
+                tokenAmount = tokenAmount,
+                vSolInBondingCurve = curveSol,
+                vTokensInBondingCurve = curveTokens,
+                marketCapSol = curveSol * 2.5,
                 timestampEpochMs = System.currentTimeMillis()
             )
         )

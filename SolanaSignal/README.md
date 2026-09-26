@@ -70,6 +70,35 @@ Minimum SDK 26 (Android 8.0), target/compile SDK 34.
   from supply × price because reliable circulating-supply data isn't guaranteed
   from the stream.
 
+---
+
+## Fix log
+
+**v1.1** — fixed 4 real bugs found in testing:
+1. **MC/Liq showing UNKNOWN** — the parser was reading field names that don't
+   exist on PumpPortal's payload (`marketCapUsd`, `amountUsd`, etc.). Confirmed
+   against working PumpPortal integrations that the real fields are SOL-denominated:
+   `marketCapSol`, `vSolInBondingCurve`, `vTokensInBondingCurve`, `solAmount`,
+   `tokenAmount`. Added `SolPriceProvider` (polls Binance's public SOL/USDT ticker
+   every 60s, no key needed) and convert SOL → USD in `ScannerOrchestrator`. MC/Liq
+   will briefly show UNKNOWN for the first few seconds after starting the scanner
+   (live mode) until the first price fetch completes — this is shown on Dashboard.
+2. **Liquidity was never populated at all** — it's now derived from
+   `vSolInBondingCurve` (the SOL reserve in the bonding curve), a standard proxy
+   for pre-migration liquidity.
+3. **B/S always 0/0** — the Scanner screen was reading buyer/seller counts off the
+   *last emitted signal*, which often didn't exist yet or was stale (cooldown/dedupe
+   intentionally suppresses repeat WATCH/REJECTED signals). Buyer/seller/volume
+   numbers are now cached straight onto the token row on every trade and read live.
+4. **Photon link always opened /discover (homepage)** — confirmed Photon's real
+   token page format is `photon-sol.tinyastro.io/en/lp/{poolAddress}`, keyed by
+   the liquidity-pool address, not the mint. `PhotonLauncher` now uses PumpPortal's
+   `bondingCurveKey` as that pool address when available. Caveat: this only reliably
+   works pre-migration — after a token migrates to Raydium/PumpSwap its real LP
+   address differs from the pump.fun bonding curve, so post-migration tokens may
+   still fall back to the homepage (with the mint copied to clipboard) until a
+   verified post-migration pool-address field is confirmed.
+
 ## Architecture
 
 ```
