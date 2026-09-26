@@ -16,6 +16,8 @@ import com.solanasignal.app.ui.AppViewModel
 @Composable
 fun SettingsScreen(vm: AppViewModel) {
     val apiKeyConfigured by vm.settings.apiKeyConfigured.collectAsState()
+    val codeCraftConfigured by vm.settings.codeCraftConfigured.collectAsState()
+    val codeCraftModel by vm.settings.codeCraftModel.collectAsState()
     val mockMode by vm.settings.mockMode.collectAsState()
     val batteryMode by vm.settings.batteryMode.collectAsState()
     val filters by vm.settings.filterConfig.collectAsState()
@@ -60,6 +62,52 @@ fun SettingsScreen(vm: AppViewModel) {
                         OutlinedButton(onClick = { showKeyField = true }) { Text("Replace Key") }
                         Spacer(Modifier.width(8.dp))
                         OutlinedButton(onClick = { vm.clearApiKey() }) { Text("Clear Key") }
+                    }
+                }
+            }
+        }
+
+        item {
+            SettingsCard("CodeCraft AI Agent") {
+                Text(
+                    if (codeCraftConfigured) "Status: CONFIGURED (stored encrypted on-device)"
+                    else "Status: DISABLED — optional",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Only high-scoring DexScreener candidates are sent to CodeCraft for a second opinion. The AI cannot trade or sign transactions.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+                var aiKeyInput by remember { mutableStateOf("") }
+                var modelInput by remember(codeCraftModel) { mutableStateOf(codeCraftModel) }
+                OutlinedTextField(
+                    value = modelInput,
+                    onValueChange = { modelInput = it },
+                    label = { Text("Model (for example claude-opus-4.8)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = aiKeyInput,
+                    onValueChange = { aiKeyInput = it },
+                    label = { Text(if (codeCraftConfigured) "Replace CodeCraft API key" else "CodeCraft API key") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Row {
+                    Button(onClick = {
+                        vm.setCodeCraftModel(modelInput)
+                        if (aiKeyInput.isNotBlank()) {
+                            vm.setCodeCraftKey(aiKeyInput)
+                            aiKeyInput = ""
+                        }
+                    }) { Text("Save AI Settings") }
+                    if (codeCraftConfigured) {
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedButton(onClick = { vm.clearCodeCraftKey() }) { Text("Disable AI") }
                     }
                 }
             }

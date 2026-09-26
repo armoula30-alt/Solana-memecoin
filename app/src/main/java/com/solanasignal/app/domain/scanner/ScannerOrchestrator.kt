@@ -1,6 +1,8 @@
 package com.solanasignal.app.domain.scanner
 
 import android.content.Context
+import com.solanasignal.app.data.codecraft.CodeCraftAnalysis
+import com.solanasignal.app.data.codecraft.CodeCraftClient
 import com.solanasignal.app.data.dexscreener.DexScreenerClient
 import com.solanasignal.app.data.dexscreener.DexScreenerPairInfo
 import com.solanasignal.app.data.pumpportal.*
@@ -42,6 +44,7 @@ class ScannerOrchestrator(
     private val signalEngine = SignalEngine()
     private val solPriceProvider = SolPriceProvider()
     private val dexScreenerClient = DexScreenerClient()
+    private val codeCraftClient = CodeCraftClient()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var mockSource: MockEventSource? = null
@@ -51,6 +54,7 @@ class ScannerOrchestrator(
     private val lastScoreByMint = ConcurrentHashMap<String, Int>()
     private val trackedMints = ConcurrentHashMap.newKeySet<String>()
     private val lastActivityByMint = ConcurrentHashMap<String, Long>()
+    private val lastAiAnalysisByMint = ConcurrentHashMap<String, Long>()
     private var evictionJob: Job? = null
 
     private val _running = MutableStateFlow(false)
@@ -397,12 +401,16 @@ class ScannerOrchestrator(
             config = settings.filterConfig.value,
             nowMs = nowMs
         )
+        val ai = maybeAnalyzeWithCodeCraft(token, info, score.total, nowMs)
+        val signalReasons = decision.reasons + (ai?.let { analysis ->
+            analysis.reasons.map { "AI: $it" } + analysis.redFlags.map { "AI red flag: $it" }
+        } ?: emptyList())
         if (decision.shouldNotify) {
             val id = db.signalDao().insert(
                 SignalEntity(
                     mint = token.mint, symbol = token.symbol, timestamp = nowMs,
                     signalType = decision.type.name, score = score.total,
-                    reasonsJson = JSONArray(decision.reasons).toString(),
+                    reasonsJson = JSONArray(signalReasons).toString(),
                     marketCapUsd = token.marketCapUsd, liquidityUsd = info.liquidityUsd,
                     buyers = info.buys5m ?: 0, sellers = info.sells5m ?: 0,
                     buyVolumeUsd = 0.0, sellVolumeUsd = 0.0,
@@ -424,10 +432,40 @@ class ScannerOrchestrator(
                         volumeVelocity = if (info.volume5mUsd != null && info.volume1hUsd != null && info.volume1hUsd > 0.0)
                             (info.volume5mUsd * 12.0) / info.volume1hUsd else null,
                         buyerVelocity = null, sellerVelocity = null
-                    ), decision.reasons
+                    ), signalReasons
                 )
             }
         }
+    }
+
+    private suspend fun maybeAnalyzeWithCodeCraft(
+        token: TokenEntity,
+        info: DexScreenerPairInfo,
+        score: Int,
+        nowMs: Long
+    ): CodeCraftAnalysis? {
+        val key = settings.getCodeCraftKeyOrNull() ?: return null
+        if (score < settings.filterConfig.value.watchScoreFloor) return null
+        val last = lastAiAnalysisByMint[token.mint]
+        if (last != null && nowMs - last < 300_000L) return null
+        lastAiAnalysisByMint[token.mint] = nowMs
+        val analysis = codeCraftClient.analyze(key, settings.codeCraftModel.value, token, info)
+        if (analysis == null) {
+            logSystemEvent("CODECRAFT", "AI analysis unavailable for ${token.symbol ?: token.mint.take(8)}")
+            return null
+        }
+        db.tokenDao().upsert(
+            token.copy(
+                aiDecision = analysis.decision,
+                aiConfidence = analysis.confidence,
+                aiRisk = analysis.risk,
+                aiReasonsJson = JSONArray(analysis.reasons).toString(),
+                aiRedFlagsJson = JSONArray(analysis.redFlags).toString(),
+                aiAnalyzedAtEpochMs = nowMs
+            )
+        )
+        logSystemEvent("CODECRAFT", "${token.symbol ?: token.mint.take(8)}: ${analysis.decision} (${analysis.confidence ?: "?"}%, ${analysis.risk ?: "UNKNOWN"} risk)")
+        return analysis
     }
 
     // --- Metrics -> Safety -> Score -> Signal pipeline ----------------------

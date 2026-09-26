@@ -83,6 +83,20 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
             }
         }
 
+        token?.let { t ->
+            t.aiDecision?.let { decision ->
+                item {
+                    DetailCard("CodeCraft AI") {
+                        Row("Decision", decision)
+                        Row("Confidence", t.aiConfidence?.let { "$it/100" } ?: "UNKNOWN")
+                        Row("Risk", t.aiRisk ?: "UNKNOWN")
+                        t.aiReasonsJson?.let { Text("Reasons: $it", style = MaterialTheme.typography.bodySmall) }
+                        t.aiRedFlagsJson?.let { Text("Red flags: $it", style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
+            }
+        }
+
         latestSignal?.let { s ->
             item {
                 DetailCard("Metrics") {
