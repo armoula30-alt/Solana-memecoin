@@ -49,6 +49,8 @@ class ScannerOrchestrator(
 
     private val lastScoreByMint = ConcurrentHashMap<String, Int>()
     private val trackedMints = ConcurrentHashMap.newKeySet<String>()
+    private val lastActivityByMint = ConcurrentHashMap<String, Long>()
+    private var evictionJob: Job? = null
 
     private val _running = MutableStateFlow(false)
     val running: StateFlow<Boolean> = _running.asStateFlow()
@@ -80,6 +82,9 @@ class ScannerOrchestrator(
     private val _dexScreenerEnrichedCount = MutableStateFlow(0)
     val dexScreenerEnrichedCount: StateFlow<Int> = _dexScreenerEnrichedCount.asStateFlow()
 
+    private val _tradesReceivedCount = MutableStateFlow(0)
+    val tradesReceivedCount: StateFlow<Int> = _tradesReceivedCount.asStateFlow()
+
     val solUsdPrice: StateFlow<Double?> get() = solPriceProvider.priceUsd
 
     fun start() {
@@ -89,6 +94,7 @@ class ScannerOrchestrator(
 
         if (settings.mockMode.value) startMock() else startLive()
         startDexScreenerEnrichment()
+        startStaleTokenEviction()
     }
 
     fun stop() {
@@ -98,7 +104,39 @@ class ScannerOrchestrator(
         webSocketManager = null
         solPriceProvider.stop()
         dexScreenerJob?.cancel()
+        evictionJob?.cancel()
         _connectionState.value = ConnectionState.DISCONNECTED
+    }
+
+    /**
+     * BUG FIX: trackedMints previously only ever grew, up to maxTrackedForBatteryMode()
+     * (e.g. 60 in Balanced mode), and then permanently stopped accepting new tokens -
+     * the app would get stuck watching the same first-60 tokens forever, most of which
+     * go dead within minutes, while every newer (possibly actually pumping) token was
+     * silently ignored. Every 60s, drop any tracked mint with no trade activity in the
+     * last 5 minutes, unsubscribe it, and free its slot for a fresher token.
+     */
+    private fun startStaleTokenEviction() {
+        evictionJob?.cancel()
+        evictionJob = scope.launch {
+            while (isActive) {
+                delay(60_000)
+                val staleCutoff = System.currentTimeMillis() - 5 * 60_000
+                val stale = trackedMints.filter { mint ->
+                    val last = lastActivityByMint[mint]
+                    last == null || last < staleCutoff
+                }
+                if (stale.isEmpty()) continue
+                stale.forEach { mint ->
+                    trackedMints.remove(mint)
+                    lastActivityByMint.remove(mint)
+                    metricsEngine.dropToken(mint)
+                }
+                webSocketManager?.unsubscribeTokenTrade(stale)
+                _trackedSubscriptionCount.value = trackedMints.size
+                logSystemEvent("SUBSCRIPTION", "Evicted ${stale.size} stale token(s) with no trades in 5m, freeing slots")
+            }
+        }
     }
 
     /**
@@ -153,6 +191,10 @@ class ScannerOrchestrator(
         manager.subscribeMigration()
 
         // Forward the manager's live state into our stable, always-observable flows.
+        // (Trade counting is NOT forwarded from here - handleTrade() below increments
+        // _tradesReceivedCount itself, since that path also runs in Mock Mode and
+        // counts post-dedupe; forwarding the manager's own separate raw-message
+        // counter here as well would race two writers against the same flow.)
         scope.launch { manager.connectionState.collect { _connectionState.value = it } }
         scope.launch { manager.reconnectCount.collect { _reconnectCount.value = it } }
         scope.launch { manager.parserErrorCount.collect { _parserErrorCount.value = it } }
@@ -181,7 +223,11 @@ class ScannerOrchestrator(
             is ParseResult.TokenCreated -> handleTokenCreated(result.event)
             is ParseResult.Migration -> handleMigration(result.event)
             is ParseResult.Trade -> handleTrade(result.event)
-            is ParseResult.Unknown -> logSystemEvent("PARSER_UNKNOWN", "Unhandled event type: ${result.rawType}")
+            is ParseResult.Unknown -> logSystemEvent(
+                "PARSER_UNKNOWN",
+                "Unrecognized message (likely a subscription ack or an error from PumpPortal - check content): " +
+                    result.raw.take(400)
+            )
             is ParseResult.Malformed -> Unit // already counted/logged by the WS manager
         }
     }
@@ -211,6 +257,7 @@ class ScannerOrchestrator(
         val maxTracked = maxTrackedForBatteryMode()
         if (trackedMints.size < maxTracked) {
             trackedMints.add(event.mint)
+            lastActivityByMint[event.mint] = event.receivedAtEpochMs
             webSocketManager?.subscribeTokenTrade(listOf(event.mint))
             _trackedSubscriptionCount.value = trackedMints.size
         }
@@ -225,6 +272,8 @@ class ScannerOrchestrator(
     private suspend fun handleTrade(event: NormalizedTradeEvent) {
         val dedupeKey = event.dedupeKey()
         if (db.tradeDao().existsByDedupeKey(dedupeKey) > 0) return // never process the same trade twice
+        _tradesReceivedCount.value += 1
+        lastActivityByMint[event.mint] = event.timestampEpochMs
 
         val solPrice = currentSolUsdPrice()
         val amountUsd = usd(event.solAmount, solPrice)

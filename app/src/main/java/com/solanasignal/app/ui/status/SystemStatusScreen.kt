@@ -24,6 +24,7 @@ fun SystemStatusScreen(vm: AppViewModel) {
     val eventsPerSec by vm.eventsPerSecond.collectAsState()
     val tradeSubsActive by vm.trackedSubscriptionCount.collectAsState()
     val dexEnriched by vm.dexScreenerEnrichedCount.collectAsState()
+    val tradesReceived by vm.tradesReceivedCount.collectAsState()
     val mockMode by vm.settings.mockMode.collectAsState()
     val sdf = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
 
@@ -35,8 +36,9 @@ fun SystemStatusScreen(vm: AppViewModel) {
                     StatusRow("PumpPortal WebSocket", connection.name)
                     StatusRow("API Key", if (apiKeyConfigured) "CONFIGURED" else "NOT SET")
                     StatusRow("Foreground service", if (running) "RUNNING" else "STOPPED")
-                    StatusRow("Tokens discovered", tokens.size.toString())
-                    StatusRow("Trade subscriptions active", tradeSubsActive.toString())
+                    StatusRow("Tokens discovered (free)", tokens.size.toString())
+                    StatusRow("Trade subscriptions sent", tradeSubsActive.toString())
+                    StatusRow("Trades actually received (metered)", tradesReceived.toString())
                     StatusRow("DexScreener enriched (last pass)", if (mockMode) "N/A (mock mode)" else dexEnriched.toString())
                     StatusRow("Events/sec (live)", eventsPerSec.toString())
                     StatusRow("Reconnects this session", reconnects.toString())
@@ -45,29 +47,45 @@ fun SystemStatusScreen(vm: AppViewModel) {
                 }
             }
         }
-        if (reconnects > 3 || parserErrors > 0) {
+
+        if (!mockMode && running && tradeSubsActive > 0 && tradesReceived == 0) {
             item {
                 Card(Modifier.fillMaxWidth()) {
                     Text(
-                        if (reconnects > 3)
-                            "High reconnect count usually means the connection is dropping repeatedly - check your network, or that the API key is valid if one is set."
-                        else
-                            "Parser errors mean some messages from PumpPortal didn't match the expected shape - check Recent System Events below for details.",
+                        "0 trades received despite $tradeSubsActive active subscriptions. New-token discovery " +
+                            "is free and works regardless of your key - trade data is metered (0.01 SOL / 10,000 " +
+                            "events) and PumpPortal will silently drop the subscription if your key is invalid or " +
+                            "its balance is exhausted. Check your balance on PumpPortal's own site. Also check " +
+                            "\"Recent System Events\" below - any error or acknowledgement PumpPortal sends back " +
+                            "that isn't a token/trade event now shows up there with its raw content.",
                         Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
         }
-        if (tradeSubsActive == 0 && tokens.isNotEmpty()) {
+        if (tradeSubsActive == 0 && tokens.isNotEmpty() && !mockMode) {
             item {
                 Text(
-                    "No trade subscriptions are active yet, so no BUY/SELL/WATCH signals can be produced " +
-                        "(new-token discovery is free and works without a key; per-token trade data is metered " +
-                        "and requires a valid PumpPortal API key with balance). Check Settings.",
+                    "No trade subscriptions are active at all, so no BUY/SELL/WATCH signals can be produced. " +
+                        "Check Settings for the API key.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
         }
+        if (reconnects > 3 || parserErrors > 0) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Text(
+                        if (reconnects > 3)
+                            "High reconnect count usually means the connection is dropping repeatedly - check your network, or that the API key is valid."
+                        else
+                            "Parser errors mean some messages from PumpPortal didn't match the expected shape - check Recent System Events below.",
+                        Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+
         item { Text("Recent System Events", style = MaterialTheme.typography.titleMedium) }
         items(events) { e ->
             Card(Modifier.fillMaxWidth()) {
