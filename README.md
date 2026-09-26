@@ -44,8 +44,8 @@ Minimum SDK 26 (Android 8.0), target/compile SDK 34.
 ## Important implementation notes / honesty about limitations
 
 - **PumpPortal field names**: `PumpPortalEventParser.kt` implements the documented
-  `subscribeNewToken` / `subscribeTokenTrade` / `subscribeMigration` message shapes
-  as best understood from the public docs (`https://pumpportal.fun/data-api/real-time/`).
+  `subscribeNewToken` event stream as best understood from the public docs
+  (`https://pumpportal.fun/data-api/real-time/`).
   I did not have live network access while generating this project, so **before
   shipping, diff the field names in that parser against the current live docs** and
   adjust if PumpPortal has changed anything. The parser is written defensively
