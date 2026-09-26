@@ -137,10 +137,11 @@ source layered on top of PumpPortal:
 
 The app now uses a deliberate two-source pipeline:
 
-1. **PumpPortal WebSocket is the discovery source.** `subscribeNewToken` detects
-   new launches immediately, and `subscribeMigration` plus `subscribeTokenTrade`
-   provide the live bonding-curve activity used for the first signal decision.
-2. **DexScreener is the enrichment source.** Every tracked mint is queried in
+1. **PumpPortal WebSocket is the discovery source only.** `subscribeNewToken`
+   detects new launches immediately. The app does not subscribe to PumpPortal
+   token trades; this avoids metered trade subscriptions and keeps PumpPortal
+   focused on finding new mints.
+2. **DexScreener is the analysis and enrichment source.** Every tracked mint is queried in
    batches (up to 30 addresses per request) shortly after discovery and then on a
    rolling interval. The app stores the best-liquidity known pair and its DEX,
    pair URL, price, liquidity, market cap, FDV, volumes, buy/sell counts, price

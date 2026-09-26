@@ -35,7 +35,7 @@ fun SettingsScreen(vm: AppViewModel) {
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Free: subscribeNewToken, subscribeMigration. Metered (0.01 SOL / 10,000 events, requires key): subscribeTokenTrade, subscribeAccountTrade.",
+                    "PumpPortal is used only to discover new mints. The app then polls DexScreener for market data and analyzes it; PumpPortal trade subscriptions are not used.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(8.dp))

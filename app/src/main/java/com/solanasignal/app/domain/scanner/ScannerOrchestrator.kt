@@ -2,6 +2,7 @@ package com.solanasignal.app.domain.scanner
 
 import android.content.Context
 import com.solanasignal.app.data.dexscreener.DexScreenerClient
+import com.solanasignal.app.data.dexscreener.DexScreenerPairInfo
 import com.solanasignal.app.data.pumpportal.*
 import com.solanasignal.app.data.room.AppDatabase
 import com.solanasignal.app.data.room.entities.*
@@ -132,7 +133,6 @@ class ScannerOrchestrator(
                     lastActivityByMint.remove(mint)
                     metricsEngine.dropToken(mint)
                 }
-                webSocketManager?.unsubscribeTokenTrade(stale)
                 _trackedSubscriptionCount.value = trackedMints.size
                 logSystemEvent("SUBSCRIPTION", "Evicted ${stale.size} stale token(s) with no trades in 5m, freeing slots")
             }
@@ -162,8 +162,8 @@ class ScannerOrchestrator(
                         var enrichedCount = 0
                         pairs.forEach { (mint, info) ->
                             val token = db.tokenDao().getByMint(mint) ?: return@forEach
-                            db.tokenDao().upsert(
-                                token.copy(
+                            lastActivityByMint[mint] = System.currentTimeMillis()
+                            val enrichedToken = token.copy(
                                     poolAddress = info.pairAddress,
                                     dexId = info.dexId,
                                     dexUrl = info.url,
@@ -192,7 +192,8 @@ class ScannerOrchestrator(
                                     dexWebsitesJson = info.websitesJson,
                                     dexSocialsJson = info.socialsJson
                                 )
-                            )
+                            db.tokenDao().upsert(enrichedToken)
+                            analyzeDexAndMaybeSignal(enrichedToken, info)
                             enrichedCount++
                         }
                         _dexScreenerEnrichedCount.value = enrichedCount
@@ -214,7 +215,6 @@ class ScannerOrchestrator(
         webSocketManager = manager
         manager.start()
         manager.subscribeNewToken()
-        manager.subscribeMigration()
 
         // Forward the manager's live state into our stable, always-observable flows.
         // (Trade counting is NOT forwarded from here - handleTrade() below increments
@@ -284,7 +284,6 @@ class ScannerOrchestrator(
         if (trackedMints.size < maxTracked) {
             trackedMints.add(event.mint)
             lastActivityByMint[event.mint] = event.receivedAtEpochMs
-            webSocketManager?.subscribeTokenTrade(listOf(event.mint))
             _trackedSubscriptionCount.value = trackedMints.size
         }
     }
@@ -332,6 +331,96 @@ class ScannerOrchestrator(
         }
 
         analyzeAndMaybeSignal(event.mint, event.timestampEpochMs)
+    }
+
+    /**
+     * The primary live analysis path: PumpPortal only discovers new mints;
+     * DexScreener supplies the market activity used for scoring and signals.
+     */
+    private suspend fun analyzeDexAndMaybeSignal(token: TokenEntity, info: DexScreenerPairInfo) {
+        val nowMs = System.currentTimeMillis()
+        val ageSeconds = (nowMs - token.firstSeenAtEpochMs).coerceAtLeast(0L) / 1000L
+        val safety = safetyEngine.evaluate(
+            mint = token.mint,
+            creatorSellVolumeUsdRecent = null,
+            totalVolumeUsdRecent = info.volume5mUsd ?: 0.0,
+            migrationState = if (token.lifecycle == "MIGRATED") "MIGRATED" else null,
+            holderConcentrationPct = null,
+            liquidityUsd = info.liquidityUsd,
+            largestSingleTradeUsd = null,
+            nowMs = nowMs
+        )
+        val score = scoringEngine.scoreDex(
+            buys5m = info.buys5m,
+            sells5m = info.sells5m,
+            buyVolume5mUsd = null,
+            sellVolume5mUsd = null,
+            volume5mUsd = info.volume5mUsd,
+            volume1hUsd = info.volume1hUsd,
+            priceChange5mPct = info.priceChange5mPct,
+            liquidityUsd = info.liquidityUsd,
+            safety = safety,
+            weights = settings.scoreWeights.value
+        )
+        db.scoreDao().insert(
+            ScoreEntity(
+                mint = token.mint, timestamp = nowMs, score = score.total,
+                buyerPressure = score.components.find { it.label == "Buyer Pressure" }?.value,
+                volumePressure = score.components.find { it.label == "Volume Pressure" }?.value,
+                volumeVelocity = score.components.find { it.label == "Volume Velocity" }?.value,
+                priceMomentum = score.components.find { it.label == "Price Momentum" }?.value,
+                liquidity = score.components.find { it.label == "Liquidity" }?.value,
+                holderDistribution = null,
+                safety = score.components.find { it.label == "Safety" }?.value
+            )
+        )
+        val decision = signalEngine.evaluateDex(
+            mint = token.mint,
+            ageSeconds = ageSeconds,
+            marketCapUsd = token.marketCapUsd,
+            buys5m = info.buys5m,
+            sells5m = info.sells5m,
+            buyVolume5mUsd = null,
+            sellVolume5mUsd = null,
+            volumeVelocity = if (info.volume5mUsd != null && info.volume1hUsd != null && info.volume1hUsd > 0.0)
+                (info.volume5mUsd * 12.0) / info.volume1hUsd else null,
+            priceChange5mPct = info.priceChange5mPct,
+            score = score,
+            safety = safety,
+            config = settings.filterConfig.value,
+            nowMs = nowMs
+        )
+        if (decision.shouldNotify) {
+            val id = db.signalDao().insert(
+                SignalEntity(
+                    mint = token.mint, symbol = token.symbol, timestamp = nowMs,
+                    signalType = decision.type.name, score = score.total,
+                    reasonsJson = JSONArray(decision.reasons).toString(),
+                    marketCapUsd = token.marketCapUsd, liquidityUsd = info.liquidityUsd,
+                    buyers = info.buys5m ?: 0, sellers = info.sells5m ?: 0,
+                    buyVolumeUsd = 0.0, sellVolumeUsd = 0.0,
+                    priceUsd = info.priceUsd
+                )
+            )
+            if (decision.type == SignalType.BUY || decision.type == SignalType.SELL) {
+                NotificationHelper.showSignalNotification(
+                    context, id, token.mint, token.poolAddress, token.symbol ?: token.mint.take(6),
+                    decision.type, score.total,
+                    com.solanasignal.app.domain.metrics.WindowMetrics(
+                        windowSeconds = 300, totalTrades = (info.buys5m ?: 0) + (info.sells5m ?: 0),
+                        buys = info.buys5m ?: 0, sells = info.sells5m ?: 0,
+                        uniqueBuyers = info.buys5m ?: 0, uniqueSellers = info.sells5m ?: 0,
+                        buyVolumeUsd = 0.0, sellVolumeUsd = 0.0,
+                        avgBuySizeUsd = 0.0, avgSellSizeUsd = 0.0,
+                        largestBuyUsd = 0.0, largestSellUsd = 0.0,
+                        latestPriceUsd = info.priceUsd, priceChangePct = info.priceChange5mPct,
+                        volumeVelocity = if (info.volume5mUsd != null && info.volume1hUsd != null && info.volume1hUsd > 0.0)
+                            (info.volume5mUsd * 12.0) / info.volume1hUsd else null,
+                        buyerVelocity = null, sellerVelocity = null
+                    ), decision.reasons
+                )
+            }
+        }
     }
 
     // --- Metrics -> Safety -> Score -> Signal pipeline ----------------------
@@ -449,9 +538,11 @@ class ScannerOrchestrator(
     }
 
     private fun maxTrackedForBatteryMode(): Int = when (settings.batteryMode.value) {
-        BatteryMode.PERFORMANCE -> 150
-        BatteryMode.BALANCED -> 60
-        BatteryMode.BATTERY_SAVER -> 20
+        // DexScreener requests are batched in groups of 30 and are read-only;
+        // these limits are not PumpPortal trade-subscription limits.
+        BatteryMode.PERFORMANCE -> 500
+        BatteryMode.BALANCED -> 250
+        BatteryMode.BATTERY_SAVER -> 100
     }
 
     private fun usd(solValue: Double?, solPriceUsd: Double?): Double? =

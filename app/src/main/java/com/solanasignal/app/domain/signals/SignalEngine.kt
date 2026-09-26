@@ -37,6 +37,55 @@ class SignalEngine {
 
     private val stateByMint = ConcurrentHashMap<String, SignalState>()
 
+    fun evaluateDex(
+        mint: String,
+        ageSeconds: Long?,
+        marketCapUsd: Double?,
+        buys5m: Int?,
+        sells5m: Int?,
+        buyVolume5mUsd: Double?,
+        sellVolume5mUsd: Double?,
+        volumeVelocity: Double?,
+        priceChange5mPct: Double?,
+        score: MomentumScore,
+        safety: SafetyReport,
+        config: FilterConfig,
+        nowMs: Long
+    ): SignalDecision {
+        val ageOk = ageSeconds != null && ageSeconds <= config.maxTokenAgeSeconds
+        val mcOk = marketCapUsd != null && marketCapUsd >= config.minMarketCapUsd
+        val buyersOk = !config.requireBuyersGtSellers ||
+            (buys5m != null && sells5m != null && buys5m > sells5m)
+        // DexScreener exposes aggregate volume and buy/sell counts, not buy/sell
+        // volume amounts. Do not reject a token for a metric this source cannot provide.
+        val volOk = !config.requireBuyVolumeGtSellVolume ||
+            buyVolume5mUsd == null || sellVolume5mUsd == null || buyVolume5mUsd > sellVolume5mUsd
+        val safetyOk = safety.overall != CheckStatus.FAIL
+        val scoreOk = score.total >= config.minScoreForBuy
+        val reasons = buildList {
+            if (ageOk) add("DexScreener pair is within the token-age window")
+            if (mcOk) add("Market cap above minimum")
+            if (buyersOk) add("DexScreener 5m buys > sells")
+            if (buyVolume5mUsd != null && sellVolume5mUsd != null && buyVolume5mUsd > sellVolume5mUsd) {
+                add("DexScreener 5m buy volume > sell volume")
+            } else if (buyVolume5mUsd == null || sellVolume5mUsd == null) {
+                add("Buy/sell volume split unavailable from DexScreener; aggregate volume used")
+            }
+            if ((volumeVelocity ?: 0.0) > 1.5) add("5m volume is accelerating versus the 1h baseline")
+            if ((priceChange5mPct ?: 0.0) > 0) add("Positive 5m price momentum")
+            if (safetyOk) add("Available safety checks did not fail")
+        }
+        val rawType = when {
+            ageOk && mcOk && buyersOk && volOk && safetyOk && scoreOk -> SignalType.BUY
+            score.total >= config.watchScoreFloor -> SignalType.WATCH
+            else -> SignalType.REJECTED
+        }
+        return SignalDecision(
+            rawType, score.total, emptyList(), reasons,
+            shouldEmit(mint, rawType, score.total, config, nowMs)
+        )
+    }
+
     fun evaluate(
         mint: String,
         ageSeconds: Long?,

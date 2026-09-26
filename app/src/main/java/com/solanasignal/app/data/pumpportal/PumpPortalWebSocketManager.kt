@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.*
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
@@ -18,14 +17,11 @@ import kotlin.math.pow
 
 /**
  * Manages ONE persistent WebSocket connection to PumpPortal (spec #4: never opens a
- * new socket per token). Handles auth via the API-key URL, subscribe/unsubscribe,
- * reconnection with exponential backoff, subscription restore, staleness/latency
- * monitoring, and rate-limit-aware batching of subscription messages (spec #7, #8, #43).
+ * new socket per token). Handles optional auth via the API-key URL, new-token
+ * discovery, reconnection with exponential backoff, discovery restore, and
+ * staleness/latency monitoring.
  *
- * Wire format for subscribe/unsubscribe messages matches the official documented
- * methods (subscribeNewToken, subscribeMigration, subscribeTokenTrade,
- * subscribeAccountTrade, and their unsubscribe counterparts). No alternative or
- * invented message shapes are used (spec #5).
+ * The only wire message used here is the official subscribeNewToken method.
  */
 class PumpPortalWebSocketManager(
     private val getApiKey: () -> String?,
@@ -36,7 +32,6 @@ class PumpPortalWebSocketManager(
         private const val TAG = "PumpPortalWS"
         private const val BASE_URL = "wss://pumpportal.fun/api/data"
         private const val MAX_SUB_MSGS_PER_SEC = 200          // spec #8
-        private const val MAX_KEYS_PER_SUB_MESSAGE = 5000     // spec #8
         private const val STALE_THRESHOLD_MS = 30_000L
         private const val MAX_BACKOFF_MS = 60_000L
     }
@@ -66,11 +61,8 @@ class PumpPortalWebSocketManager(
     private val _parserErrorCount = MutableStateFlow(0)
     val parserErrorCount: StateFlow<Int> = _parserErrorCount.asStateFlow()
 
-    // Active subscriptions we must restore after a reconnect.
-    private val activeTokenTradeKeys = linkedSetOf<String>()
-    private val activeAccountTradeKeys = linkedSetOf<String>()
+    // Only the free new-token discovery stream is used by this app.
     private var subscribedNewToken = false
-    private var subscribedMigration = false
 
     private val outboundQueue = Channel<JSONObject>(capacity = Channel.UNLIMITED)
     private var pumpJob: Job? = null
@@ -104,53 +96,6 @@ class PumpPortalWebSocketManager(
     fun subscribeNewToken() {
         subscribedNewToken = true
         enqueue(JSONObject().put("method", "subscribeNewToken"))
-    }
-
-    fun subscribeMigration() {
-        subscribedMigration = true
-        enqueue(JSONObject().put("method", "subscribeMigration"))
-    }
-
-    fun subscribeTokenTrade(mints: List<String>) {
-        if (getApiKey().isNullOrBlank()) {
-            onSystemEvent("AUTH_ERROR", "Token-trade subscription skipped: PumpPortal API key is missing")
-            return
-        }
-        val newOnes = mints.filter { activeTokenTradeKeys.add(it) } // dedupe (spec #7)
-        if (newOnes.isEmpty()) return
-        batchAndEnqueue("subscribeTokenTrade", newOnes)
-    }
-
-    fun unsubscribeTokenTrade(mints: List<String>) {
-        val existing = mints.filter { activeTokenTradeKeys.remove(it) }
-        if (existing.isEmpty()) return
-        batchAndEnqueue("unsubscribeTokenTrade", existing)
-    }
-
-    fun subscribeAccountTrade(accounts: List<String>) {
-        if (getApiKey().isNullOrBlank()) {
-            onSystemEvent("AUTH_ERROR", "Account-trade subscription skipped: PumpPortal API key is missing")
-            return
-        }
-        val newOnes = accounts.filter { activeAccountTradeKeys.add(it) }
-        if (newOnes.isEmpty()) return
-        batchAndEnqueue("subscribeAccountTrade", newOnes)
-    }
-
-    fun unsubscribeAccountTrade(accounts: List<String>) {
-        val existing = accounts.filter { activeAccountTradeKeys.remove(it) }
-        if (existing.isEmpty()) return
-        batchAndEnqueue("unsubscribeAccountTrade", existing)
-    }
-
-    val activeSubscriptionCount: Int get() = activeTokenTradeKeys.size + activeAccountTradeKeys.size +
-            (if (subscribedNewToken) 1 else 0) + (if (subscribedMigration) 1 else 0)
-
-    private fun batchAndEnqueue(method: String, keys: List<String>) {
-        // spec #8: no more than 5000 addresses per subscription message.
-        keys.chunked(MAX_KEYS_PER_SUB_MESSAGE).forEach { chunk ->
-            enqueue(JSONObject().put("method", method).put("keys", JSONArray(chunk)))
-        }
     }
 
     private fun enqueue(msg: JSONObject) {
@@ -281,13 +226,6 @@ class PumpPortalWebSocketManager(
         // the gap are NOT assumed received - callers should treat resumed tracking
         // as having a potential data gap.
         if (subscribedNewToken) enqueue(JSONObject().put("method", "subscribeNewToken"))
-        if (subscribedMigration) enqueue(JSONObject().put("method", "subscribeMigration"))
-        if (activeTokenTradeKeys.isNotEmpty()) {
-            batchAndEnqueue("subscribeTokenTrade", activeTokenTradeKeys.toList())
-        }
-        if (activeAccountTradeKeys.isNotEmpty()) {
-            batchAndEnqueue("subscribeAccountTrade", activeAccountTradeKeys.toList())
-        }
-        onSystemEvent("CONNECTION", "Restored ${activeSubscriptionCount} subscription(s) after reconnect")
+        onSystemEvent("CONNECTION", "Restored new-token discovery after reconnect")
     }
 }

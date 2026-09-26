@@ -2,12 +2,13 @@ package com.solanasignal.app.data.dexscreener
 
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
  * Read-only DexScreener enrichment for tokens discovered by PumpPortal.
- * PumpPortal remains the low-latency discovery/trade stream; DexScreener is
+ * PumpPortal remains the low-latency discovery stream; DexScreener is
  * eventually consistent and may not index a brand-new token immediately.
  */
 data class DexScreenerPairInfo(
@@ -47,7 +48,7 @@ class DexScreenerClient {
         .build()
 
     companion object {
-        private const val BASE_URL = "https://api.dexscreener.com/latest/dex/tokens/"
+        private const val BASE_URL = "https://api.dexscreener.com/tokens/v1/solana/"
         const val MAX_ADDRESSES_PER_CALL = 30
     }
 
@@ -76,7 +77,11 @@ class DexScreenerClient {
     }
 
     private fun parseAndMerge(body: String, result: MutableMap<String, DexScreenerPairInfo>) {
-        val pairs = JSONObject(body).optJSONArray("pairs") ?: return
+        val pairs = if (body.trimStart().startsWith("[")) {
+            JSONArray(body)
+        } else {
+            JSONObject(body).optJSONArray("pairs") ?: return
+        }
         for (i in 0 until pairs.length()) {
             val pair = pairs.optJSONObject(i) ?: continue
             val baseToken = pair.optJSONObject("baseToken") ?: continue

@@ -22,6 +22,47 @@ data class MomentumScore(
  */
 class ScoringEngine {
 
+    fun scoreDex(
+        buys5m: Int?,
+        sells5m: Int?,
+        buyVolume5mUsd: Double?,
+        sellVolume5mUsd: Double?,
+        volume5mUsd: Double?,
+        volume1hUsd: Double?,
+        priceChange5mPct: Double?,
+        liquidityUsd: Double?,
+        safety: SafetyReport,
+        weights: ScoreWeights
+    ): MomentumScore {
+        val buyerPressure = if (buys5m != null && sells5m != null) {
+            normalizeRatio(buys5m.toDouble() / maxOf(sells5m, 1).toDouble())
+        } else null
+        val volumePressure = if (buyVolume5mUsd != null && sellVolume5mUsd != null) {
+            normalizeRatio(buyVolume5mUsd / maxOf(sellVolume5mUsd, 1.0))
+        } else null
+        val velocity = if (volume5mUsd != null && volume1hUsd != null && volume1hUsd > 0.0) {
+            normalizeRatio((volume5mUsd * 12.0) / volume1hUsd)
+        } else null
+        val priceMomentum = priceChange5mPct?.let { momentumCurve(it) }
+        val liquidityScore = liquidityUsd?.let { min(100.0, (it / 20_000.0) * 100.0) }
+        val safetyScore = safety.scorePercent()
+        val components = listOf(
+            ComponentScore("Buyer Pressure", buyerPressure) to weights.buyerPressure,
+            ComponentScore("Volume Pressure", volumePressure) to weights.volumePressure,
+            ComponentScore("Volume Velocity", velocity) to weights.volumeVelocity,
+            ComponentScore("Price Momentum", priceMomentum) to weights.priceMomentum,
+            ComponentScore("Liquidity", liquidityScore) to weights.liquidity,
+            ComponentScore("Holder Distribution", null) to weights.holderDistribution,
+            ComponentScore("Safety", safetyScore) to weights.safety
+        )
+        val available = components.filter { it.first.value != null }
+        val totalWeight = available.sumOf { it.second }
+        val total = if (totalWeight > 0.0) {
+            available.sumOf { (component, weight) -> component.value!! * weight / totalWeight }.toInt()
+        } else 0
+        return MomentumScore(total.coerceIn(0, 100), components.map { it.first })
+    }
+
     fun score(
         metrics5m: WindowMetrics,
         metrics1m: WindowMetrics,

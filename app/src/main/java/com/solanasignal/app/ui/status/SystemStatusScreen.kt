@@ -34,11 +34,11 @@ fun SystemStatusScreen(vm: AppViewModel) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
                     StatusRow("PumpPortal WebSocket", connection.name)
-                    StatusRow("API Key", if (apiKeyConfigured) "CONFIGURED" else "NOT SET")
+                    StatusRow("PumpPortal API key", if (apiKeyConfigured) "OPTIONAL / CONFIGURED" else "NOT REQUIRED")
                     StatusRow("Foreground service", if (running) "RUNNING" else "STOPPED")
                     StatusRow("Tokens discovered (free)", tokens.size.toString())
-                    StatusRow("Trade subscriptions sent", tradeSubsActive.toString())
-                    StatusRow("Trades actually received (metered)", tradesReceived.toString())
+                    StatusRow("Mints tracked for DexScreener", tradeSubsActive.toString())
+                    StatusRow("Legacy PumpPortal trades received", tradesReceived.toString())
                     StatusRow("DexScreener enriched (last pass)", if (mockMode) "N/A (mock mode)" else dexEnriched.toString())
                     StatusRow("Events/sec (live)", eventsPerSec.toString())
                     StatusRow("Reconnects this session", reconnects.toString())
@@ -48,29 +48,8 @@ fun SystemStatusScreen(vm: AppViewModel) {
             }
         }
 
-        if (!mockMode && running && tradeSubsActive > 0 && tradesReceived == 0) {
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Text(
-                        "0 trades received despite $tradeSubsActive active subscriptions. New-token discovery " +
-                            "is free and works regardless of your key - trade data is metered (0.01 SOL / 10,000 " +
-                            "events) and PumpPortal will silently drop the subscription if your key is invalid or " +
-                            "its balance is exhausted. Check your balance on PumpPortal's own site. Also check " +
-                            "\"Recent System Events\" below - any error or acknowledgement PumpPortal sends back " +
-                            "that isn't a token/trade event now shows up there with its raw content.",
-                        Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-        }
-        if (tradeSubsActive == 0 && tokens.isNotEmpty() && !mockMode) {
-            item {
-                Text(
-                    "No trade subscriptions are active at all, so no BUY/SELL/WATCH signals can be produced. " +
-                        "Check Settings for the API key.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+        if (!mockMode && running && dexEnriched == 0 && tokens.isNotEmpty()) {
+            item { Text("DexScreener has not indexed any tracked mint yet; the app will retry automatically.", style = MaterialTheme.typography.bodySmall) }
         }
         if (reconnects > 3 || parserErrors > 0) {
             item {

@@ -20,7 +20,6 @@ fun DashboardScreen(vm: AppViewModel) {
     val tokens by vm.tokens.collectAsState()
     val signals by vm.signals.collectAsState()
     val mockMode by vm.settings.mockMode.collectAsState()
-    val apiKeyConfigured by vm.settings.apiKeyConfigured.collectAsState()
     val scope = rememberCoroutineScope()
     var signalsToday by remember { mutableStateOf(0) }
 
@@ -50,12 +49,7 @@ fun DashboardScreen(vm: AppViewModel) {
                         }
                         Switch(checked = running, onCheckedChange = {
                             if (it) vm.startScanner() else vm.stopScanner()
-                        }, enabled = mockMode || apiKeyConfigured)
-                    }
-                    if (!mockMode && !apiKeyConfigured) {
-                        Spacer(Modifier.height(8.dp))
-                        Text("Set a PumpPortal API key in Settings, or enable Mock Mode, to start scanning.",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        })
                     }
                     Spacer(Modifier.height(8.dp))
                     Text("PumpPortal: ${connectionLabel(connection)}")
@@ -78,7 +72,7 @@ fun DashboardScreen(vm: AppViewModel) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 StatCard("Tokens discovered", tokens.size.toString(), Modifier.weight(1f))
                 val trackedCount by vm.trackedSubscriptionCount.collectAsState()
-                StatCard("Trade subs active", trackedCount.toString(), Modifier.weight(1f))
+                StatCard("Mints tracked for Dex", trackedCount.toString(), Modifier.weight(1f))
             }
         }
         item {
