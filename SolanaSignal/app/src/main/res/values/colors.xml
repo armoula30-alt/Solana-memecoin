@@ -1,7 +1,0 @@
-<resources>
-    <color name="buy_green">#22C55E</color>
-    <color name="sell_red">#EF4444</color>
-    <color name="watch_amber">#F59E0B</color>
-    <color name="bg_dark">#0B0E14</color>
-    <color name="surface_dark">#141A24</color>
-</resources>
