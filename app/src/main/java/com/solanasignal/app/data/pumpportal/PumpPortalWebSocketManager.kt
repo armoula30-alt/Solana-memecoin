@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.*
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
@@ -151,7 +150,7 @@ class PumpPortalWebSocketManager(
         if (manuallyStopped) return
         val generation = ++socketGeneration
         val apiKey = getApiKey()
-        val httpUrl = BASE_URL.toHttpUrl().newBuilder().apply {
+        val httpUrl = HttpUrl.parse(BASE_URL)!!.newBuilder().apply {
             apiKey?.takeIf { it.isNotBlank() }?.let { addQueryParameter("api-key", it) }
         }.build()
         _connectionState.value = if (reconnectAttempt == 0) ConnectionState.CONNECTING else ConnectionState.RECONNECTING

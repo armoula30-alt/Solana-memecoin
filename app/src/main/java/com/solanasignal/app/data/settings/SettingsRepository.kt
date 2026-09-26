@@ -61,14 +61,6 @@ class SettingsRepository private constructor(context: Context) {
     private val _apiKeyConfigured = MutableStateFlow(hasApiKey())
     val apiKeyConfigured: StateFlow<Boolean> = _apiKeyConfigured.asStateFlow()
 
-    private val _codeCraftConfigured = MutableStateFlow(getCodeCraftKeyOrNull() != null)
-    val codeCraftConfigured: StateFlow<Boolean> = _codeCraftConfigured.asStateFlow()
-
-    private val _codeCraftModel = MutableStateFlow(
-        securePrefs.getString(KEY_CODECRAFT_MODEL, DEFAULT_CODECRAFT_MODEL) ?: DEFAULT_CODECRAFT_MODEL
-    )
-    val codeCraftModel: StateFlow<String> = _codeCraftModel.asStateFlow()
-
     private val _filterConfig = MutableStateFlow(FilterConfig())
     val filterConfig: StateFlow<FilterConfig> = _filterConfig.asStateFlow()
 
@@ -95,25 +87,6 @@ class SettingsRepository private constructor(context: Context) {
         _apiKeyConfigured.value = false
     }
 
-    fun setCodeCraftKey(key: String) {
-        securePrefs.edit().putString(KEY_CODECRAFT_KEY, key.trim()).apply()
-        _codeCraftConfigured.value = key.isNotBlank()
-    }
-
-    fun clearCodeCraftKey() {
-        securePrefs.edit().remove(KEY_CODECRAFT_KEY).apply()
-        _codeCraftConfigured.value = false
-    }
-
-    fun getCodeCraftKeyOrNull(): String? =
-        securePrefs.getString(KEY_CODECRAFT_KEY, null)?.takeIf { it.isNotBlank() }
-
-    fun setCodeCraftModel(model: String) {
-        val value = model.trim().ifBlank { DEFAULT_CODECRAFT_MODEL }
-        securePrefs.edit().putString(KEY_CODECRAFT_MODEL, value).apply()
-        _codeCraftModel.value = value
-    }
-
     /** Returns the raw key only to the WebSocket manager building the connection URL. Never log this value. */
     fun getApiKeyOrNull(): String? = securePrefs.getString(KEY_API_KEY, null)?.takeIf { it.isNotBlank() }
 
@@ -127,9 +100,6 @@ class SettingsRepository private constructor(context: Context) {
 
     companion object {
         private const val KEY_API_KEY = "pumpportal_api_key"
-        private const val KEY_CODECRAFT_KEY = "codecraft_api_key"
-        private const val KEY_CODECRAFT_MODEL = "codecraft_model"
-        const val DEFAULT_CODECRAFT_MODEL = "claude-opus-4.8"
 
         @Volatile private var instance: SettingsRepository? = null
         fun get(context: Context): SettingsRepository =

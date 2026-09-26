@@ -56,12 +56,6 @@ data class TokenEntity(
     val dexDescription: String? = null,
     val dexWebsitesJson: String? = null,
     val dexSocialsJson: String? = null,
-    val aiDecision: String? = null,
-    val aiConfidence: Int? = null,
-    val aiRisk: String? = null,
-    val aiReasonsJson: String? = null,
-    val aiRedFlagsJson: String? = null,
-    val aiAnalyzedAtEpochMs: Long? = null,
     val lifecycle: String,          // e.g. NEW, MIGRATED, TRACKING, STALE, REJECTED
     val source: String              // "pumpportal" or "mock"
 )
