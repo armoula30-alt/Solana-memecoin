@@ -17,7 +17,7 @@ import com.solanasignal.app.data.room.entities.*
         SignalOutcomeEntity::class,
         SystemEventEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

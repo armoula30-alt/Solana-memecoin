@@ -42,6 +42,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setApiKey(key: String) = settings.setApiKey(key)
     fun clearApiKey() = settings.clearApiKey()
+    fun setCodeCraftKey(key: String) = settings.setCodeCraftKey(key)
+    fun clearCodeCraftKey() = settings.clearCodeCraftKey()
+    fun setCodeCraftModel(model: String) = settings.setCodeCraftModel(model)
     fun setMockMode(enabled: Boolean) = settings.setMockMode(enabled)
     fun setBatteryMode(mode: BatteryMode) = settings.setBatteryMode(mode)
     fun updateFilters(config: FilterConfig) = settings.updateFilters(config)

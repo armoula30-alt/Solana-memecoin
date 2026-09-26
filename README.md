@@ -150,11 +150,9 @@ The app now uses a deliberate two-source pipeline:
    before DexScreener indexes it. The UI marks those fields as not indexed rather
    than fabricating values; later enrichment updates the same token row.
 
-This improves early detection and context, but it is not a guarantee that a token
-will pump. DexScreener is eventually consistent, can lag on brand-new tokens, and
-its API terms and rate limits apply. PumpPortal token-trade subscriptions are also
-metered according to its current documentation. The app remains signal-only: it
-does not hold a wallet, sign, or submit a transaction.
+This improves early detection and context, but it is not a guarantee that a token will pump. DexScreener is eventually consistent, can lag on brand-new tokens, and its API terms and rate limits apply. PumpPortal token-trade subscriptions are also metered according to its current documentation. The app remains signal-only: it does not hold a wallet, sign, or submit a transaction.
+
+Optional CodeCraft AI review is available in Settings. The app sends only locally filtered, high-scoring DexScreener candidates to `https://codecraftapi.com/v1/chat/completions`, using the configured model and an encrypted on-device API key. The response is constrained to JSON (`BUY_CANDIDATE`, `WATCH`, or `REJECTED`, confidence, risk, reasons, and red flags) and is advisory only; it cannot execute trades. AI review is rate-limited per token and skipped when no CodeCraft key is configured.
 
 ---
 
