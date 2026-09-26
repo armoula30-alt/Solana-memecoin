@@ -33,7 +33,7 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
 
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
-            Text("$${token?.symbol ?: mint.take(6)}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text("\$${token?.symbol ?: mint.take(6)}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(token?.name ?: "Unknown name", style = MaterialTheme.typography.bodyMedium)
         }
 
@@ -46,6 +46,40 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
                 Row("Market Cap", token?.marketCapUsd?.let { "$%.0f".format(it) } ?: "UNKNOWN")
                 Row("Liquidity", token?.liquidityUsd?.let { "$%.0f".format(it) } ?: "UNKNOWN")
                 Row("Price", token?.lastPriceUsd?.let { "$%.8f".format(it) } ?: "UNKNOWN")
+            }
+        }
+
+        token?.let { t ->
+            if (t.dexId != null) {
+                item {
+                    DetailCard("DexScreener") {
+                        Row("Pair", t.poolAddress?.take(10)?.plus("...") ?: "UNKNOWN")
+                        Row("FDV", t.dexFdVUsd?.let { "$%,.0f".format(it) } ?: "UNKNOWN")
+                        Row("5m Volume", t.dexVolume5mUsd?.let { "$%,.0f".format(it) } ?: "UNKNOWN")
+                        Row("1h Volume", t.dexVolume1hUsd?.let { "$%,.0f".format(it) } ?: "UNKNOWN")
+                        Row("6h Volume", t.dexVolume6hUsd?.let { "$%,.0f".format(it) } ?: "UNKNOWN")
+                        Row("24h Volume", t.dexVolume24hUsd?.let { "$%,.0f".format(it) } ?: "UNKNOWN")
+                        Row("5m Buys/Sells", "${t.dexBuys5m ?: "?"}/${t.dexSells5m ?: "?"}")
+                        Row("1h Buys/Sells", "${t.dexBuys1h ?: "?"}/${t.dexSells1h ?: "?"}")
+                        Row("5m Change", t.dexPriceChange5mPct?.let { "%.2f%%".format(it) } ?: "UNKNOWN")
+                        Row("1h Change", t.dexPriceChange1hPct?.let { "%.2f%%".format(it) } ?: "UNKNOWN")
+                        Row("6h Change", t.dexPriceChange6hPct?.let { "%.2f%%".format(it) } ?: "UNKNOWN")
+                        Row("24h Change", t.dexPriceChange24hPct?.let { "%.2f%%".format(it) } ?: "UNKNOWN")
+                        Row("Active Boosts", t.dexActiveBoosts?.toString() ?: "UNKNOWN")
+                        t.dexUrl?.let { Text("DexScreener: $it", style = MaterialTheme.typography.bodySmall) }
+                        t.dexDescription?.takeIf { it.isNotBlank() }?.let {
+                            Spacer(Modifier.height(4.dp))
+                            Text(it, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            } else {
+                item {
+                    Text(
+                        "DexScreener لم يفهرس هذه العملة بعد؛ المعروض حاليًا هو بيانات PumpPortal اللحظية.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
             }
         }
 

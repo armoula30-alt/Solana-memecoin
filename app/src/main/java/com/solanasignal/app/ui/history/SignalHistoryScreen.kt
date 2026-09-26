@@ -33,7 +33,7 @@ fun SignalHistoryScreen(vm: AppViewModel) {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("$${s.symbol ?: s.mint.take(6)} \u2014 ${s.signalType}", fontWeight = FontWeight.Bold)
+                            Text("\$${s.symbol ?: s.mint.take(6)} \u2014 ${s.signalType}", fontWeight = FontWeight.Bold)
                             Text("${s.score}/100")
                         }
                         Text(sdf.format(Date(s.timestamp)), style = MaterialTheme.typography.bodySmall)

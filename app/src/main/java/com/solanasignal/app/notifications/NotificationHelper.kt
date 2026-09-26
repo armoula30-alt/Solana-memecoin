@@ -48,7 +48,7 @@ object NotificationHelper {
         val title = "$emoji ${if (type == SignalType.BUY) "NEW SOLANA SIGNAL" else "SELL SIGNAL"}"
 
         val body = buildString {
-            append("$$symbol\n")
+            append("$symbol\n")
             append("Buyers: ${m5.uniqueBuyers}  Sellers: ${m5.uniqueSellers}\n")
             append("Buy/Sell Vol: %.2fx  ".format(m5.buySellVolumeRatio))
             m5.volumeVelocity?.let { append("Velocity: %.1fx\n".format(it)) } ?: append("Velocity: N/A\n")
@@ -74,7 +74,7 @@ object NotificationHelper {
         val builder = NotificationCompat.Builder(context, channel)
             .setSmallIcon(android.R.drawable.stat_notify_sync) // replace with app icon asset
             .setContentTitle(title)
-            .setContentText("$$symbol \u2022 Score $score/100")
+            .setContentText("$symbol \u2022 Score $score/100")
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)

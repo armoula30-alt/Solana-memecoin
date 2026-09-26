@@ -133,6 +133,28 @@ source layered on top of PumpPortal:
 - Check **System Status** for a live "DexScreener enriched (last pass)" counter to
   confirm it's working.
 
+## Discovery and enrichment pipeline (v1.4)
+
+The app now uses a deliberate two-source pipeline:
+
+1. **PumpPortal WebSocket is the discovery source.** `subscribeNewToken` detects
+   new launches immediately, and `subscribeMigration` plus `subscribeTokenTrade`
+   provide the live bonding-curve activity used for the first signal decision.
+2. **DexScreener is the enrichment source.** Every tracked mint is queried in
+   batches (up to 30 addresses per request) shortly after discovery and then on a
+   rolling interval. The app stores the best-liquidity known pair and its DEX,
+   pair URL, price, liquidity, market cap, FDV, volumes, buy/sell counts, price
+   changes, boosts, image, description, websites, and socials when available.
+3. **Fallback is explicit.** A token can be visible and scored from PumpPortal
+   before DexScreener indexes it. The UI marks those fields as not indexed rather
+   than fabricating values; later enrichment updates the same token row.
+
+This improves early detection and context, but it is not a guarantee that a token
+will pump. DexScreener is eventually consistent, can lag on brand-new tokens, and
+its API terms and rate limits apply. PumpPortal token-trade subscriptions are also
+metered according to its current documentation. The app remains signal-only: it
+does not hold a wallet, sign, or submit a transaction.
+
 ---
 
 ## "Sniping" - what this app does and does not do (v1.3)

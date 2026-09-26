@@ -99,7 +99,7 @@ fun DashboardScreen(vm: AppViewModel) {
             Card(Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(12.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column {
-                        Text("$${s.symbol ?: s.mint.take(6)}", fontWeight = FontWeight.Bold)
+                        Text("\$${s.symbol ?: s.mint.take(6)}", fontWeight = FontWeight.Bold)
                         Text(s.signalType, style = MaterialTheme.typography.bodySmall)
                     }
                     Text("${s.score}/100", fontWeight = FontWeight.Bold)

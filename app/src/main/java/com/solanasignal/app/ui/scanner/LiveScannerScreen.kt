@@ -34,14 +34,14 @@ fun LiveScannerScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
             ) {
                 Column(Modifier.padding(12.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("$${token.symbol ?: token.mint.take(6)}", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Text("\$${token.symbol ?: token.mint.take(6)}", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                         StatusBadge(signal?.signalType ?: "TRACKING")
                     }
                     Spacer(Modifier.height(4.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         MiniStat("Age", formatAge(ageSec))
-                        MiniStat("MC", token.marketCapUsd?.let { "$${formatCompact(it)}" } ?: "UNKNOWN")
-                        MiniStat("Liq", token.liquidityUsd?.let { "$${formatCompact(it)}" } ?: "UNKNOWN")
+                        MiniStat("MC", token.marketCapUsd?.let { "\$${formatCompact(it)}" } ?: "UNKNOWN")
+                        MiniStat("Liq", token.liquidityUsd?.let { "\$${formatCompact(it)}" } ?: "UNKNOWN")
                     }
                     Spacer(Modifier.height(4.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

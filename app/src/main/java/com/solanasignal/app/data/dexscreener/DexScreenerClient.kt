@@ -6,27 +6,38 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * DexScreener's public REST API (no key required): GET
- * https://api.dexscreener.com/latest/dex/tokens/{mint1},{mint2},...  (max 30 addresses/call)
- * Returns every known DEX pair for each address, with authoritative USD-denominated
- * figures (DexScreener computes these from on-chain pool reserves itself - this is
- * NOT us doing a SOL->USD conversion, it's DexScreener's own number). Confirmed
- * response shape (pairs[].pairAddress, .dexId, .priceUsd, .liquidity.usd, .marketCap,
- * .fdv) against multiple independent working integrations, since the official docs
- * page couldn't be fetched live at generation time - if DexScreener changes its
- * schema, this is the one place to update.
- *
- * A very new token (seconds old) usually isn't indexed yet - callers get an empty
- * result for it, never a fabricated one, and should keep using PumpPortal-derived
- * estimates until DexScreener catches up (typically well under a minute).
+ * Read-only DexScreener enrichment for tokens discovered by PumpPortal.
+ * PumpPortal remains the low-latency discovery/trade stream; DexScreener is
+ * eventually consistent and may not index a brand-new token immediately.
  */
 data class DexScreenerPairInfo(
     val pairAddress: String,
-    val dexId: String?,          // "pumpfun", "raydium", "pumpswap", ...
+    val dexId: String?,
+    val url: String?,
     val priceUsd: Double?,
     val liquidityUsd: Double?,
+    val liquidityBase: Double?,
+    val liquidityQuote: Double?,
     val marketCapUsd: Double?,
-    val fdvUsd: Double?
+    val fdvUsd: Double?,
+    val pairCreatedAtEpochMs: Long?,
+    val volume5mUsd: Double?,
+    val volume1hUsd: Double?,
+    val volume6hUsd: Double?,
+    val volume24hUsd: Double?,
+    val buys5m: Int?,
+    val sells5m: Int?,
+    val buys1h: Int?,
+    val sells1h: Int?,
+    val priceChange5mPct: Double?,
+    val priceChange1hPct: Double?,
+    val priceChange6hPct: Double?,
+    val priceChange24hPct: Double?,
+    val activeBoosts: Int?,
+    val imageUrl: String?,
+    val description: String?,
+    val websitesJson: String?,
+    val socialsJson: String?
 )
 
 class DexScreenerClient {
@@ -38,50 +49,72 @@ class DexScreenerClient {
     companion object {
         private const val BASE_URL = "https://api.dexscreener.com/latest/dex/tokens/"
         const val MAX_ADDRESSES_PER_CALL = 30
-        // DexScreener has no strictly documented limit; independent integrations
-        // report treating ~300 req/min as a safe ceiling. We stay far under that
-        // by polling every ~20s in batches of 30 (see ScannerOrchestrator).
     }
 
-    /** Returns, for each mint that DexScreener knows about, its highest-liquidity pair. Missing mints = not indexed yet, not an error. */
+    /**
+     * Returns the highest-liquidity Solana pair known for each requested mint.
+     * Missing mints are normal for tokens created seconds ago.
+     */
     suspend fun fetchBestPairs(mints: List<String>): Map<String, DexScreenerPairInfo> {
         if (mints.isEmpty()) return emptyMap()
         val result = mutableMapOf<String, DexScreenerPairInfo>()
         mints.chunked(MAX_ADDRESSES_PER_CALL).forEach { chunk ->
             try {
-                val url = BASE_URL + chunk.joinToString(",")
-                val request = Request.Builder().url(url).build()
+                val request = Request.Builder()
+                    .url(BASE_URL + chunk.joinToString(","))
+                    .build()
                 client.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) return@use
                     val body = response.body?.string() ?: return@use
                     parseAndMerge(body, result)
                 }
             } catch (_: Exception) {
-                // Network hiccup or this batch failed - skip it, keep whatever we already
-                // have from previous batches/polls. Never fabricate a fallback value.
+                // Keep the PumpPortal-derived snapshot when DexScreener is unavailable.
             }
         }
         return result
     }
 
     private fun parseAndMerge(body: String, result: MutableMap<String, DexScreenerPairInfo>) {
-        val json = JSONObject(body)
-        val pairs = json.optJSONArray("pairs") ?: return
+        val pairs = JSONObject(body).optJSONArray("pairs") ?: return
         for (i in 0 until pairs.length()) {
             val pair = pairs.optJSONObject(i) ?: continue
             val baseToken = pair.optJSONObject("baseToken") ?: continue
             val mint = baseToken.optStringOrNull("address") ?: continue
             val pairAddress = pair.optStringOrNull("pairAddress") ?: continue
-            val liquidityObj = pair.optJSONObject("liquidity")
+            val liquidity = pair.optJSONObject("liquidity")
+            val txns = pair.optJSONObject("txns")
+            val volume = pair.optJSONObject("volume")
+            val changes = pair.optJSONObject("priceChange")
             val info = DexScreenerPairInfo(
                 pairAddress = pairAddress,
                 dexId = pair.optStringOrNull("dexId"),
+                url = pair.optStringOrNull("url"),
                 priceUsd = pair.optStringOrNull("priceUsd")?.toDoubleOrNull(),
-                liquidityUsd = liquidityObj?.optDoubleOrNull("usd"),
+                liquidityUsd = liquidity?.optDoubleOrNull("usd"),
+                liquidityBase = liquidity?.optDoubleOrNull("base"),
+                liquidityQuote = liquidity?.optDoubleOrNull("quote"),
                 marketCapUsd = pair.optDoubleOrNull("marketCap"),
-                fdvUsd = pair.optDoubleOrNull("fdv")
+                fdvUsd = pair.optDoubleOrNull("fdv"),
+                pairCreatedAtEpochMs = pair.optLongOrNull("pairCreatedAt"),
+                volume5mUsd = volume?.optDoubleOrNull("m5"),
+                volume1hUsd = volume?.optDoubleOrNull("h1"),
+                volume6hUsd = volume?.optDoubleOrNull("h6"),
+                volume24hUsd = volume?.optDoubleOrNull("h24"),
+                buys5m = txns?.optJSONObject("m5")?.optIntOrNull("buys"),
+                sells5m = txns?.optJSONObject("m5")?.optIntOrNull("sells"),
+                buys1h = txns?.optJSONObject("h1")?.optIntOrNull("buys"),
+                sells1h = txns?.optJSONObject("h1")?.optIntOrNull("sells"),
+                priceChange5mPct = changes?.optDoubleOrNull("m5"),
+                priceChange1hPct = changes?.optDoubleOrNull("h1"),
+                priceChange6hPct = changes?.optDoubleOrNull("h6"),
+                priceChange24hPct = changes?.optDoubleOrNull("h24"),
+                activeBoosts = pair.optJSONObject("boosts")?.optIntOrNull("active"),
+                imageUrl = pair.optJSONObject("info")?.optStringOrNull("imageUrl"),
+                description = pair.optJSONObject("info")?.optStringOrNull("description"),
+                websitesJson = pair.optJSONObject("info")?.optJSONArray("websites")?.toString(),
+                socialsJson = pair.optJSONObject("info")?.optJSONArray("socials")?.toString()
             )
-            // Keep the highest-liquidity pair per mint when a token has several (e.g. multiple DEXs).
             val existing = result[mint]
             if (existing == null || (info.liquidityUsd ?: 0.0) > (existing.liquidityUsd ?: 0.0)) {
                 result[mint] = info
@@ -94,4 +127,10 @@ class DexScreenerClient {
 
     private fun JSONObject.optDoubleOrNull(key: String): Double? =
         if (has(key) && !isNull(key)) optDouble(key).takeIf { !it.isNaN() } else null
+
+    private fun JSONObject.optLongOrNull(key: String): Long? =
+        if (has(key) && !isNull(key)) optLong(key).takeIf { it > 0L } else null
+
+    private fun JSONObject.optIntOrNull(key: String): Int? =
+        if (has(key) && !isNull(key)) optInt(key) else null
 }

@@ -151,30 +151,56 @@ class ScannerOrchestrator(
         dexScreenerJob?.cancel()
         if (settings.mockMode.value) return
         dexScreenerJob = scope.launch {
+            // First pass is deliberately short so a newly discovered token can be
+            // enriched as soon as DexScreener indexes it; later passes are batched.
+            delay(3_000)
             while (isActive) {
-                delay(20_000)
                 val mints = trackedMints.toList()
-                if (mints.isEmpty()) continue
-                try {
-                    val pairs = dexScreenerClient.fetchBestPairs(mints)
-                    var enrichedCount = 0
-                    pairs.forEach { (mint, info) ->
-                        val token = db.tokenDao().getByMint(mint) ?: return@forEach
-                        db.tokenDao().upsert(
-                            token.copy(
-                                poolAddress = info.pairAddress,       // prefer DexScreener's real pool address
-                                dexId = info.dexId,
-                                marketCapUsd = info.marketCapUsd ?: token.marketCapUsd,
-                                liquidityUsd = info.liquidityUsd ?: token.liquidityUsd,
-                                lastPriceUsd = info.priceUsd ?: token.lastPriceUsd
+                if (mints.isNotEmpty()) {
+                    try {
+                        val pairs = dexScreenerClient.fetchBestPairs(mints)
+                        var enrichedCount = 0
+                        pairs.forEach { (mint, info) ->
+                            val token = db.tokenDao().getByMint(mint) ?: return@forEach
+                            db.tokenDao().upsert(
+                                token.copy(
+                                    poolAddress = info.pairAddress,
+                                    dexId = info.dexId,
+                                    dexUrl = info.url,
+                                    marketCapUsd = info.marketCapUsd ?: token.marketCapUsd,
+                                    liquidityUsd = info.liquidityUsd ?: token.liquidityUsd,
+                                    lastPriceUsd = info.priceUsd ?: token.lastPriceUsd,
+                                    dexPairCreatedAtEpochMs = info.pairCreatedAtEpochMs,
+                                    dexVolume5mUsd = info.volume5mUsd,
+                                    dexVolume1hUsd = info.volume1hUsd,
+                                    dexVolume6hUsd = info.volume6hUsd,
+                                    dexVolume24hUsd = info.volume24hUsd,
+                                    dexBuys5m = info.buys5m,
+                                    dexSells5m = info.sells5m,
+                                    dexBuys1h = info.buys1h,
+                                    dexSells1h = info.sells1h,
+                                    dexPriceChange5mPct = info.priceChange5mPct,
+                                    dexPriceChange1hPct = info.priceChange1hPct,
+                                    dexPriceChange6hPct = info.priceChange6hPct,
+                                    dexPriceChange24hPct = info.priceChange24hPct,
+                                    dexFdVUsd = info.fdvUsd,
+                                    dexLiquidityBase = info.liquidityBase,
+                                    dexLiquidityQuote = info.liquidityQuote,
+                                    dexActiveBoosts = info.activeBoosts,
+                                    dexImageUrl = info.imageUrl,
+                                    dexDescription = info.description,
+                                    dexWebsitesJson = info.websitesJson,
+                                    dexSocialsJson = info.socialsJson
+                                )
                             )
-                        )
-                        enrichedCount++
+                            enrichedCount++
+                        }
+                        _dexScreenerEnrichedCount.value = enrichedCount
+                    } catch (e: Exception) {
+                        logSystemEvent("DEXSCREENER", "Enrichment batch failed: ${e.message}")
                     }
-                    _dexScreenerEnrichedCount.value = enrichedCount
-                } catch (e: Exception) {
-                    logSystemEvent("DEXSCREENER", "Enrichment batch failed: ${e.message}")
                 }
+                delay(20_000)
             }
         }
     }
