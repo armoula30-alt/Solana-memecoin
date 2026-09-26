@@ -75,13 +75,16 @@ class PumpPortalWebSocketManager(
     private val outboundQueue = Channel<JSONObject>(capacity = Channel.UNLIMITED)
     private var pumpJob: Job? = null
     private var monitorJob: Job? = null
+    private var reconnectJob: Job? = null
     private var reconnectAttempt = 0
     private var manuallyStopped = true
+    private var socketGeneration = 0L
 
     private var eventCounterWindowStart = System.currentTimeMillis()
     private var eventCounterCount = 0
 
     fun start() {
+        if (!manuallyStopped) return
         manuallyStopped = false
         connect()
         startOutboundPump()
@@ -92,6 +95,7 @@ class PumpPortalWebSocketManager(
         manuallyStopped = true
         pumpJob?.cancel()
         monitorJob?.cancel()
+        reconnectJob?.cancel()
         webSocket?.close(1000, "user stopped scanner")
         webSocket = null
         _connectionState.value = ConnectionState.DISCONNECTED
@@ -108,6 +112,10 @@ class PumpPortalWebSocketManager(
     }
 
     fun subscribeTokenTrade(mints: List<String>) {
+        if (getApiKey().isNullOrBlank()) {
+            onSystemEvent("AUTH_ERROR", "Token-trade subscription skipped: PumpPortal API key is missing")
+            return
+        }
         val newOnes = mints.filter { activeTokenTradeKeys.add(it) } // dedupe (spec #7)
         if (newOnes.isEmpty()) return
         batchAndEnqueue("subscribeTokenTrade", newOnes)
@@ -120,6 +128,10 @@ class PumpPortalWebSocketManager(
     }
 
     fun subscribeAccountTrade(accounts: List<String>) {
+        if (getApiKey().isNullOrBlank()) {
+            onSystemEvent("AUTH_ERROR", "Account-trade subscription skipped: PumpPortal API key is missing")
+            return
+        }
         val newOnes = accounts.filter { activeAccountTradeKeys.add(it) }
         if (newOnes.isEmpty()) return
         batchAndEnqueue("subscribeAccountTrade", newOnes)
@@ -153,7 +165,9 @@ class PumpPortalWebSocketManager(
             for (msg in outboundQueue) {
                 val ws = webSocket
                 if (ws != null && _connectionState.value == ConnectionState.CONNECTED) {
-                    ws.send(msg.toString())
+                    if (!ws.send(msg.toString())) {
+                        onSystemEvent("SUBSCRIPTION_ERROR", "PumpPortal rejected outbound message: ${msg.optString("method", "unknown")}")
+                    }
                 } else {
                     // Not connected - re-enqueue and wait; avoids dropping subscriptions.
                     delay(500)
@@ -188,17 +202,26 @@ class PumpPortalWebSocketManager(
     }
 
     private fun connect() {
+        if (manuallyStopped) return
+        val generation = ++socketGeneration
         val apiKey = getApiKey()
-        val url = if (apiKey != null) "$BASE_URL?api-key=$apiKey" else BASE_URL
+        val httpUrl = HttpUrl.parse(BASE_URL)!!.newBuilder().apply {
+            apiKey?.takeIf { it.isNotBlank() }?.let { addQueryParameter("api-key", it) }
+        }.build()
         _connectionState.value = if (reconnectAttempt == 0) ConnectionState.CONNECTING else ConnectionState.RECONNECTING
 
-        val request = Request.Builder().url(url).build()
+        val request = Request.Builder().url(httpUrl).build()
         val pingSentAt = longArrayOf(0L)
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
+                if (generation != socketGeneration || manuallyStopped) {
+                    ws.close(1000, "superseded connection")
+                    return
+                }
                 _connectionState.value = ConnectionState.CONNECTED
                 reconnectAttempt = 0
+                reconnectJob = null
                 onSystemEvent("CONNECTION", "WebSocket connected")
                 restoreSubscriptions()
             }
@@ -225,23 +248,29 @@ class PumpPortalWebSocketManager(
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                if (!manuallyStopped) scheduleReconnect()
+                if (!manuallyStopped && generation == socketGeneration) {
+                    onSystemEvent("CONNECTION", "WebSocket closed ($code): ${reason.ifBlank { "no reason" }}")
+                    scheduleReconnect()
+                }
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                onSystemEvent("CONNECTION", "WebSocket failure: ${t.message}")
-                if (!manuallyStopped) scheduleReconnect()
+                if (generation != socketGeneration || manuallyStopped) return
+                onSystemEvent("CONNECTION", "WebSocket failure: ${t.message ?: t.javaClass.simpleName}")
+                scheduleReconnect()
             }
         })
     }
 
     private fun scheduleReconnect() {
+        if (manuallyStopped || reconnectJob?.isActive == true) return
         _connectionState.value = ConnectionState.RECONNECTING
         _reconnectCount.value += 1
         val backoff = min(MAX_BACKOFF_MS, (1000L * 2.0.pow(reconnectAttempt)).toLong())
         reconnectAttempt++
-        scope.launch {
+        reconnectJob = scope.launch {
             delay(backoff)
+            reconnectJob = null
             if (!manuallyStopped) connect()
         }
     }
