@@ -31,9 +31,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val tokens: StateFlow<List<TokenEntity>> =
         db.tokenDao().observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val trackedTokens: StateFlow<List<TokenEntity>> =
-        db.tokenDao().observeTracked().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
     val signals: StateFlow<List<SignalEntity>> =
         db.signalDao().observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
