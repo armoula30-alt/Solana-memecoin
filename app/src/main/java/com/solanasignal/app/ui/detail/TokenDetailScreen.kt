@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.solanasignal.app.data.chart.ChartCandle
 import com.solanasignal.app.data.chart.ChartInterval
 import com.solanasignal.app.photon.PhotonLauncher
 import com.solanasignal.app.ui.AppViewModel
@@ -30,7 +31,7 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
     val token = tokens.find { it.mint == mint }
     val latestSignal = signals.filter { it.mint == mint }.maxByOrNull { it.timestamp }
     var chartInterval by remember { mutableStateOf(ChartInterval.ONE_MINUTE) }
-    val candles by produceState(emptyList(), mint, chartInterval) {
+    val candles by produceState<List<ChartCandle>>(emptyList(), mint, chartInterval) {
         while (isActive) {
             value = vm.loadChart(mint, chartInterval)
             delay(5_000L)
