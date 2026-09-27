@@ -46,6 +46,7 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
                 Row("Market Cap", token?.marketCapUsd?.let { "$%.0f".format(it) } ?: "UNKNOWN")
                 Row("Liquidity", token?.liquidityUsd?.let { "$%.0f".format(it) } ?: "UNKNOWN")
                 Row("Price", token?.lastPriceUsd?.let { "$%.8f".format(it) } ?: "UNKNOWN")
+                Row("Data quality", token?.let { t -> t.dataQualityScore?.let { "$it/100 ${t.dataQualityLabel ?: ""}" } } ?: "UNKNOWN")
             }
         }
 
@@ -90,8 +91,20 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
                         Row("Decision", decision)
                         Row("Confidence", t.aiConfidence?.let { "$it/100" } ?: "UNKNOWN")
                         Row("Risk", t.aiRisk ?: "UNKNOWN")
-                        t.aiReasonsJson?.let { Text("Reasons: $it", style = MaterialTheme.typography.bodySmall) }
-                        t.aiRedFlagsJson?.let { Text("Red flags: $it", style = MaterialTheme.typography.bodySmall) }
+                        t.aiProvider?.let { Row("Provider", it) }
+                        t.aiSummary?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                        JsonListSection("Positive factors", t.aiReasonsJson, "✓")
+                        JsonListSection("Negative factors", t.aiNegativeFactorsJson, "−")
+                        JsonListSection("Risk flags", t.aiRedFlagsJson, "⚠")
+                        JsonListSection("Contradictions", t.aiContradictionsJson, "!")
+                        JsonListSection("Missing data", t.aiMissingDataJson, "?")
+                        JsonListSection("Monitor", t.aiRecommendedMonitoringJson, "→")
+                        Text(
+                            if (t.aiShouldNotify == true) "AI recommends monitoring this signal"
+                            else "AI advisory only — no automatic trading",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        t.aiAnalyzedAtEpochMs?.let { Text("Analyzed ${formatAge(System.currentTimeMillis() - it)} ago", style = MaterialTheme.typography.bodySmall) }
                     }
                 }
             }
@@ -158,5 +171,30 @@ private fun Row(label: String, value: String) {
     androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, style = MaterialTheme.typography.bodyMedium)
         Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun JsonListSection(title: String, json: String?, bullet: String) {
+    val values = parseJsonList(json)
+    if (values.isNotEmpty()) {
+        Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+        values.forEach { Text("$bullet $it", style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+private fun parseJsonList(json: String?): List<String> = json?.let {
+    runCatching {
+        val array = JSONArray(it)
+        (0 until array.length()).map { index -> array.getString(index) }
+    }.getOrDefault(emptyList())
+} ?: emptyList()
+
+private fun formatAge(milliseconds: Long): String {
+    val seconds = (milliseconds.coerceAtLeast(0L) / 1000L)
+    return when {
+        seconds < 60 -> "${seconds}s"
+        seconds < 3600 -> "${seconds / 60}m"
+        else -> "${seconds / 3600}h"
     }
 }

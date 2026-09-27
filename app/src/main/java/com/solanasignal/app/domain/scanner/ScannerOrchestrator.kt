@@ -1,7 +1,6 @@
 package com.solanasignal.app.domain.scanner
 
 import android.content.Context
-import com.solanasignal.app.data.codecraft.CodeCraftAnalysis
 import com.solanasignal.app.data.codecraft.CodeCraftClient
 import com.solanasignal.app.data.dexscreener.DexScreenerClient
 import com.solanasignal.app.data.dexscreener.DexScreenerPairInfo
@@ -174,6 +173,7 @@ class ScannerOrchestrator(
                         pairs.forEach { (mint, info) ->
                             val token = db.tokenDao().getByMint(mint) ?: return@forEach
                             lastActivityByMint[mint] = System.currentTimeMillis()
+                            val dataQuality = calculateDataQuality(info)
                             val enrichedToken = token.copy(
                                     poolAddress = info.pairAddress,
                                     dexId = info.dexId,
@@ -201,7 +201,9 @@ class ScannerOrchestrator(
                                     dexImageUrl = info.imageUrl,
                                     dexDescription = info.description,
                                     dexWebsitesJson = info.websitesJson,
-                                    dexSocialsJson = info.socialsJson
+                                    dexSocialsJson = info.socialsJson,
+                                    dataQualityScore = dataQuality.first,
+                                    dataQualityLabel = dataQuality.second
                                 )
                             db.tokenDao().upsert(enrichedToken)
                             analyzeDexAndMaybeSignal(enrichedToken, info)
@@ -401,10 +403,10 @@ class ScannerOrchestrator(
             config = settings.filterConfig.value,
             nowMs = nowMs
         )
-        val ai = maybeAnalyzeWithCodeCraft(token, info, score.total, nowMs)
-        val signalReasons = decision.reasons + (ai?.let { analysis ->
-            analysis.reasons.map { "AI: $it" } + analysis.redFlags.map { "AI red flag: $it" }
-        } ?: emptyList())
+        // AI is advisory and runs off the real-time path. Deterministic signals
+        // must not wait for a provider response or fail when AI is unavailable.
+        launchCodeCraftAnalysis(token, info, score.total, nowMs)
+        val signalReasons = decision.reasons
         if (decision.shouldNotify) {
             val id = db.signalDao().insert(
                 SignalEntity(
@@ -438,34 +440,61 @@ class ScannerOrchestrator(
         }
     }
 
-    private suspend fun maybeAnalyzeWithCodeCraft(
+    private fun launchCodeCraftAnalysis(
         token: TokenEntity,
         info: DexScreenerPairInfo,
         score: Int,
         nowMs: Long
-    ): CodeCraftAnalysis? {
-        val key = settings.getCodeCraftKeyOrNull() ?: return null
-        if (score < settings.filterConfig.value.watchScoreFloor) return null
+    ) {
+        val key = settings.getCodeCraftKeyOrNull() ?: return
+        if (score < settings.filterConfig.value.watchScoreFloor) return
         val last = lastAiAnalysisByMint[token.mint]
-        if (last != null && nowMs - last < 300_000L) return null
+        if (last != null && nowMs - last < 300_000L) return
         lastAiAnalysisByMint[token.mint] = nowMs
-        val analysis = codeCraftClient.analyze(key, settings.codeCraftModel.value, token, info)
+        scope.launch(Dispatchers.IO) {
+            val analysis = codeCraftClient.analyze(
+                key, settings.codeCraftModel.value, token, info,
+                token.dataQualityScore ?: 0
+            )
         if (analysis == null) {
             logSystemEvent("CODECRAFT", "AI analysis unavailable for ${token.symbol ?: token.mint.take(8)}")
-            return null
+            return@launch
         }
         db.tokenDao().upsert(
             token.copy(
                 aiDecision = analysis.decision,
                 aiConfidence = analysis.confidence,
                 aiRisk = analysis.risk,
-                aiReasonsJson = JSONArray(analysis.reasons).toString(),
+                aiSummary = analysis.summary,
+                aiReasonsJson = JSONArray(analysis.positiveFactors).toString(),
+                aiNegativeFactorsJson = JSONArray(analysis.negativeFactors).toString(),
                 aiRedFlagsJson = JSONArray(analysis.redFlags).toString(),
+                aiContradictionsJson = JSONArray(analysis.contradictions).toString(),
+                aiMissingDataJson = JSONArray(analysis.missingData).toString(),
+                aiRecommendedMonitoringJson = JSONArray(analysis.recommendedMonitoring).toString(),
+                aiShouldNotify = analysis.shouldNotify,
+                aiProvider = "CodeCraft/${settings.codeCraftModel.value}",
                 aiAnalyzedAtEpochMs = nowMs
             )
         )
         logSystemEvent("CODECRAFT", "${token.symbol ?: token.mint.take(8)}: ${analysis.decision} (${analysis.confidence ?: "?"}%, ${analysis.risk ?: "UNKNOWN"} risk)")
-        return analysis
+        }
+    }
+
+    private fun calculateDataQuality(info: DexScreenerPairInfo): Pair<Int, String> {
+        val available = listOf(
+            info.priceUsd, info.marketCapUsd, info.fdvUsd, info.liquidityUsd,
+            info.volume5mUsd, info.volume1hUsd, info.buys5m, info.sells5m,
+            info.priceChange5mPct, info.pairCreatedAtEpochMs
+        ).count { it != null }
+        val score = (available * 100 / 10).coerceIn(0, 100)
+        val label = when {
+            score >= 90 -> "HIGH"
+            score >= 70 -> "GOOD"
+            score >= 50 -> "LIMITED"
+            else -> "POOR"
+        }
+        return score to label
     }
 
     // --- Metrics -> Safety -> Score -> Signal pipeline ----------------------
