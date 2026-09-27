@@ -4,7 +4,7 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.solanasignal.app.di.ServiceLocator
-import kotlin.math.roundToInt
+import com.solanasignal.app.data.room.entities.SignalOutcomeEntity
 
 /**
  * Records observed forward price changes for historical signals. Values are
