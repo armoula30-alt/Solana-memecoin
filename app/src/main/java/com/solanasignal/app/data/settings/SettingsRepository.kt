@@ -69,7 +69,7 @@ class SettingsRepository private constructor(context: Context) {
     )
     val codeCraftModel: StateFlow<String> = _codeCraftModel.asStateFlow()
 
-    private val _filterConfig = MutableStateFlow(FilterConfig())
+    private val _filterConfig = MutableStateFlow(loadFilterConfig())
     val filterConfig: StateFlow<FilterConfig> = _filterConfig.asStateFlow()
 
     private val _scoreWeights = MutableStateFlow(ScoreWeights())
@@ -119,16 +119,50 @@ class SettingsRepository private constructor(context: Context) {
 
     private fun hasApiKey(): Boolean = getApiKeyOrNull() != null
 
-    fun updateFilters(config: FilterConfig) { _filterConfig.value = config }
+    fun updateFilters(config: FilterConfig) {
+        val normalized = config.copy(
+            maxTokenAgeSeconds = config.maxTokenAgeSeconds.coerceAtLeast(1),
+            minMarketCapUsd = config.minMarketCapUsd.coerceAtLeast(0.0),
+            minScoreForBuy = config.minScoreForBuy.coerceIn(0, 100),
+            watchScoreFloor = config.watchScoreFloor.coerceIn(0, 100),
+            buySignalCooldownSeconds = config.buySignalCooldownSeconds.coerceAtLeast(0),
+            sellSignalCooldownSeconds = config.sellSignalCooldownSeconds.coerceAtLeast(0),
+            resignalScoreDelta = config.resignalScoreDelta.coerceAtLeast(0)
+        )
+        securePrefs.edit()
+            .putInt(KEY_FILTER_MAX_AGE, normalized.maxTokenAgeSeconds)
+            .putString(KEY_FILTER_MIN_MC, normalized.minMarketCapUsd.toString())
+            .putInt(KEY_FILTER_MIN_BUY_SCORE, normalized.minScoreForBuy)
+            .putInt(KEY_FILTER_WATCH_FLOOR, normalized.watchScoreFloor)
+            .putInt(KEY_FILTER_BUY_COOLDOWN, normalized.buySignalCooldownSeconds)
+            .putInt(KEY_FILTER_SELL_COOLDOWN, normalized.sellSignalCooldownSeconds)
+            .apply()
+        _filterConfig.value = normalized
+    }
     fun updateWeights(weights: ScoreWeights) { _scoreWeights.value = weights }
     fun setBatteryMode(mode: BatteryMode) { _batteryMode.value = mode }
     fun setMockMode(enabled: Boolean) { _mockMode.value = enabled }
     fun setRetentionPolicy(policy: RetentionPolicy) { _retentionPolicy.value = policy }
 
+    private fun loadFilterConfig(): FilterConfig = FilterConfig(
+        maxTokenAgeSeconds = securePrefs.getInt(KEY_FILTER_MAX_AGE, 300),
+        minMarketCapUsd = securePrefs.getString(KEY_FILTER_MIN_MC, "10000.0")?.toDoubleOrNull() ?: 10_000.0,
+        minScoreForBuy = securePrefs.getInt(KEY_FILTER_MIN_BUY_SCORE, 80),
+        watchScoreFloor = securePrefs.getInt(KEY_FILTER_WATCH_FLOOR, 70),
+        buySignalCooldownSeconds = securePrefs.getInt(KEY_FILTER_BUY_COOLDOWN, 120),
+        sellSignalCooldownSeconds = securePrefs.getInt(KEY_FILTER_SELL_COOLDOWN, 60)
+    )
+
     companion object {
         private const val KEY_API_KEY = "pumpportal_api_key"
         private const val KEY_CODECRAFT_KEY = "codecraft_api_key"
         private const val KEY_CODECRAFT_MODEL = "codecraft_model"
+        private const val KEY_FILTER_MAX_AGE = "filter_max_token_age_seconds"
+        private const val KEY_FILTER_MIN_MC = "filter_min_market_cap_usd"
+        private const val KEY_FILTER_MIN_BUY_SCORE = "filter_min_score_for_buy"
+        private const val KEY_FILTER_WATCH_FLOOR = "filter_watch_score_floor"
+        private const val KEY_FILTER_BUY_COOLDOWN = "filter_buy_cooldown_seconds"
+        private const val KEY_FILTER_SELL_COOLDOWN = "filter_sell_cooldown_seconds"
         const val DEFAULT_CODECRAFT_MODEL = "claude-opus-4.8"
 
         @Volatile private var instance: SettingsRepository? = null

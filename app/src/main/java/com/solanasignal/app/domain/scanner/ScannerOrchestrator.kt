@@ -360,6 +360,9 @@ class ScannerOrchestrator(
     private suspend fun analyzeDexAndMaybeSignal(token: TokenEntity, info: DexScreenerPairInfo) {
         val nowMs = System.currentTimeMillis()
         val ageSeconds = (nowMs - token.firstSeenAtEpochMs).coerceAtLeast(0L) / 1000L
+        // The filter must use the fresh DexScreener snapshot, not the older
+        // PumpPortal/SOL estimate stored on the token.
+        val effectiveMarketCapUsd = info.marketCapUsd ?: token.marketCapUsd
         val safety = safetyEngine.evaluate(
             mint = token.mint,
             creatorSellVolumeUsdRecent = null,
@@ -397,7 +400,7 @@ class ScannerOrchestrator(
         val decision = signalEngine.evaluateDex(
             mint = token.mint,
             ageSeconds = ageSeconds,
-            marketCapUsd = token.marketCapUsd,
+            marketCapUsd = effectiveMarketCapUsd,
             buys5m = info.buys5m,
             sells5m = info.sells5m,
             buyVolume5mUsd = null,
@@ -420,7 +423,7 @@ class ScannerOrchestrator(
                     mint = token.mint, symbol = token.symbol, timestamp = nowMs,
                     signalType = decision.type.name, score = score.total,
                     reasonsJson = JSONArray(signalReasons).toString(),
-                    marketCapUsd = token.marketCapUsd, liquidityUsd = info.liquidityUsd,
+                    marketCapUsd = effectiveMarketCapUsd, liquidityUsd = info.liquidityUsd,
                     buyers = info.buys5m ?: 0, sellers = info.sells5m ?: 0,
                     buyVolumeUsd = 0.0, sellVolumeUsd = 0.0,
                     priceUsd = info.priceUsd

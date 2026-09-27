@@ -64,8 +64,11 @@ class SignalEngine {
         val scoreOk = score.total >= config.minScoreForBuy
         val reasons = buildList {
             if (ageOk) add("DexScreener pair is within the token-age window")
+            else add("Rejected: token age exceeds ${config.maxTokenAgeSeconds}s or age is unavailable")
             if (mcOk) add("Market cap above minimum")
+            else add("Rejected: market cap is below \$${config.minMarketCapUsd.toInt()} or unavailable")
             if (buyersOk) add("DexScreener 5m buys > sells")
+            else add("Rejected: 5m buys are not greater than sells")
             if (buyVolume5mUsd != null && sellVolume5mUsd != null && buyVolume5mUsd > sellVolume5mUsd) {
                 add("DexScreener 5m buy volume > sell volume")
             } else if (buyVolume5mUsd == null || sellVolume5mUsd == null) {
@@ -74,6 +77,8 @@ class SignalEngine {
             if ((volumeVelocity ?: 0.0) > 1.5) add("5m volume is accelerating versus the 1h baseline")
             if ((priceChange5mPct ?: 0.0) > 0) add("Positive 5m price momentum")
             if (safetyOk) add("Available safety checks did not fail")
+            else add("Rejected: a safety check failed")
+            if (!scoreOk) add("Watch only: score ${score.total} is below BUY threshold ${config.minScoreForBuy}")
         }
         val rawType = when {
             ageOk && mcOk && buyersOk && volOk && safetyOk && scoreOk -> SignalType.BUY

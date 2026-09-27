@@ -153,6 +153,11 @@ fun SettingsScreen(vm: AppViewModel) {
                 LabeledSlider("Sell Cooldown (s)", filters.sellSignalCooldownSeconds.toFloat(), 10f, 600f) {
                     vm.updateFilters(filters.copy(sellSignalCooldownSeconds = it.toInt()))
                 }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Saved automatically. New DexScreener evaluations use these values immediately; existing signals are not recalculated.",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         }
 
