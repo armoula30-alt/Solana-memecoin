@@ -99,7 +99,9 @@ class ScannerOrchestrator(
         } catch (e: Exception) {
             _running.value = false
             _connectionState.value = ConnectionState.DISCONNECTED
-            logSystemEvent("STARTUP_ERROR", "Scanner could not start: ${e.message ?: e.javaClass.simpleName}")
+            scope.launch {
+                logSystemEvent("STARTUP_ERROR", "Scanner could not start: ${e.message ?: e.javaClass.simpleName}")
+            }
         }
     }
 
