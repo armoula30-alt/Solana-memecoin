@@ -119,7 +119,7 @@ fun AppScaffold(vm: AppViewModel, pendingNavigateMint: MutableState<String?> = m
             startDestination = Screen.Dashboard.route,
             modifier = androidx.compose.ui.Modifier.padding(padding)
         ) {
-            composable(Screen.Dashboard.route) { DashboardScreen(vm) }
+            composable(Screen.Dashboard.route) { DashboardScreen(vm) { mint -> navController.navigate("detail/$mint") } }
             composable(Screen.Scanner.route) { LiveScannerScreen(vm) { mint -> navController.navigate("detail/$mint") } }
             composable(Screen.History.route) { SignalHistoryScreen(vm) }
             composable(Screen.Status.route) { SystemStatusScreen(vm) }

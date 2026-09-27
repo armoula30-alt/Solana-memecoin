@@ -1,5 +1,6 @@
 package com.solanasignal.app.ui.dashboard
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,7 +15,7 @@ import com.solanasignal.app.ui.AppViewModel
 import kotlinx.coroutines.launch
 
 @Composable
-fun DashboardScreen(vm: AppViewModel) {
+fun DashboardScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
     val running by vm.running.collectAsState()
     val connection by vm.connectionState.collectAsState()
     val tokens by vm.tokens.collectAsState()
@@ -90,7 +91,11 @@ fun DashboardScreen(vm: AppViewModel) {
 
         item { Text("Recent Signals", style = MaterialTheme.typography.titleMedium) }
         items(signals.take(10)) { s ->
-            Card(Modifier.fillMaxWidth()) {
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onOpenToken(s.mint) }
+            ) {
                 Row(Modifier.padding(12.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column {
                         Text("\$${s.symbol ?: s.mint.take(6)}", fontWeight = FontWeight.Bold)
