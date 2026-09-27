@@ -15,9 +15,10 @@ import com.solanasignal.app.data.room.entities.*
         ScoreEntity::class,
         SignalEntity::class,
         SignalOutcomeEntity::class,
+        SignalTransitionEntity::class,
         SystemEventEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -27,6 +28,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun scoreDao(): ScoreDao
     abstract fun signalDao(): SignalDao
     abstract fun signalOutcomeDao(): SignalOutcomeDao
+    abstract fun signalTransitionDao(): SignalTransitionDao
     abstract fun systemEventDao(): SystemEventDao
 
     companion object {

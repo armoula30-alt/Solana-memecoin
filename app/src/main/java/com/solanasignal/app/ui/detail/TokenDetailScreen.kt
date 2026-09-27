@@ -43,6 +43,7 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
                 Row("Pool", token?.poolAddress?.take(10)?.plus("...") ?: "UNKNOWN")
                 Row("DEX", token?.dexId ?: "pump.fun bonding curve (pre-index)")
                 Row("Creator", token?.creator?.take(10)?.plus("...") ?: "UNKNOWN")
+                Row("Lifecycle", token?.lifecycle ?: "UNKNOWN")
                 Row("Market Cap", token?.marketCapUsd?.let { "$%.0f".format(it) } ?: "UNKNOWN")
                 Row("Liquidity", token?.liquidityUsd?.let { "$%.0f".format(it) } ?: "UNKNOWN")
                 Row("Price", token?.lastPriceUsd?.let { "$%.8f".format(it) } ?: "UNKNOWN")

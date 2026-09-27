@@ -19,6 +19,8 @@ class RetentionWorker(context: Context, params: WorkerParameters) : CoroutineWor
         db.metricsDao().deleteOlderThan(cutoff)
         db.scoreDao().deleteOlderThan(cutoff)
         db.signalDao().deleteOlderThan(cutoff)
+        db.signalOutcomeDao().deleteOlderThan(cutoff)
+        db.signalTransitionDao().deleteOlderThan(cutoff)
         db.systemEventDao().deleteOlderThan(cutoff)
         return Result.success()
     }

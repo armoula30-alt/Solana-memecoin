@@ -16,6 +16,8 @@ import com.solanasignal.app.domain.safety.SafetyEngine
 import com.solanasignal.app.domain.scoring.ScoringEngine
 import com.solanasignal.app.domain.signals.SignalEngine
 import com.solanasignal.app.domain.signals.SignalType
+import com.solanasignal.app.domain.signals.SignalLifecycleEngine
+import com.solanasignal.app.domain.signals.SignalLifecycleState
 import com.solanasignal.app.notifications.NotificationHelper
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,6 +47,7 @@ class ScannerOrchestrator(
     private val signalEngine = SignalEngine()
     private val momentumEngine = MomentumEngine()
     private val manipulationRiskEngine = ManipulationRiskEngine()
+    private val signalLifecycleEngine = SignalLifecycleEngine()
     private val solPriceProvider = SolPriceProvider()
     private val dexScreenerClient = DexScreenerClient()
     private val codeCraftClient = CodeCraftClient()
@@ -545,6 +548,31 @@ class ScannerOrchestrator(
 
         val advancedMomentum = momentumEngine.evaluate(windows, token.liquidityUsd)
         val manipulationRisk = manipulationRiskEngine.evaluate(windows, token.liquidityUsd)
+        val previousLifecycle = runCatching { SignalLifecycleState.valueOf(token.lifecycle) }.getOrNull()
+        val lifecycleTransition = signalLifecycleEngine.transition(
+            previous = previousLifecycle,
+            momentum = advancedMomentum.state,
+            score = advancedMomentum.score,
+            manipulation = manipulationRisk.level,
+            safetyFailed = safety.hasFailed,
+            dataQualityScore = token.dataQualityScore
+        )
+        if (lifecycleTransition.changed) {
+            db.signalTransitionDao().insert(
+                com.solanasignal.app.data.room.entities.SignalTransitionEntity(
+                    mint = mint,
+                    timestamp = nowMs,
+                    previousState = lifecycleTransition.previous?.name,
+                    newState = lifecycleTransition.current.name,
+                    score = advancedMomentum.score,
+                    reasonsJson = JSONArray(
+                        advancedMomentum.reasons + manipulationRisk.findings.map { "${it.name}: ${it.explanation}" } + lifecycleTransition.reason
+                    ).toString(),
+                    manipulationRisk = manipulationRisk.score,
+                    dataQualityScore = token.dataQualityScore
+                )
+            )
+        }
         val weights = settings.scoreWeights.value
         val baseScore = scoringEngine.score(
             metrics5m = m5, metrics1m = m1,
@@ -568,6 +596,7 @@ class ScannerOrchestrator(
         )
 
         val analyzedToken = token.copy(
+            lifecycle = lifecycleTransition.current.name,
             momentumScore = advancedMomentum.score,
             momentumState = advancedMomentum.state.name,
             momentumPersistencePct = advancedMomentum.persistence,
@@ -629,7 +658,11 @@ class ScannerOrchestrator(
                 marketCapUsd = token.marketCapUsd, liquidityUsd = token.liquidityUsd,
                 buyers = m5.uniqueBuyers, sellers = m5.uniqueSellers,
                 buyVolumeUsd = m5.buyVolumeUsd, sellVolumeUsd = m5.sellVolumeUsd,
-                priceUsd = m5.latestPriceUsd
+                priceUsd = m5.latestPriceUsd,
+                lifecycleState = token.lifecycle,
+                momentumScore = token.momentumScore,
+                manipulationRiskScore = token.manipulationRiskScore,
+                dataQualityScore = token.dataQualityScore
             )
         )
         if (type == SignalType.BUY || type == SignalType.SELL) {

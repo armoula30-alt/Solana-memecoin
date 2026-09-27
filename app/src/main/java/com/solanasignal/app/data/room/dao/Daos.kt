@@ -75,6 +75,9 @@ interface SignalDao {
     @Query("SELECT * FROM signals WHERE mint = :mint ORDER BY timestamp DESC LIMIT 1")
     suspend fun latestForMint(mint: String): SignalEntity?
 
+    @Query("SELECT * FROM signals WHERE timestamp >= :cutoff ORDER BY timestamp ASC")
+    suspend fun since(cutoff: Long): List<SignalEntity>
+
     @Query("SELECT COUNT(*) FROM signals WHERE timestamp >= :sinceEpochMs")
     suspend fun countSince(sinceEpochMs: Long): Int
 
@@ -98,6 +101,24 @@ interface SignalOutcomeDao {
 
     @Query("SELECT * FROM signal_outcomes WHERE signalId = :signalId ORDER BY checkTimestamp ASC")
     suspend fun forSignal(signalId: Long): List<SignalOutcomeEntity>
+
+    @Query("SELECT COUNT(*) FROM signal_outcomes WHERE signalId = :signalId AND elapsedSeconds = :elapsedSeconds")
+    suspend fun existsCheckpoint(signalId: Long, elapsedSeconds: Int): Int
+
+    @Query("DELETE FROM signal_outcomes WHERE checkTimestamp < :cutoff")
+    suspend fun deleteOlderThan(cutoff: Long)
+}
+
+@Dao
+interface SignalTransitionDao {
+    @Insert
+    suspend fun insert(transition: SignalTransitionEntity): Long
+
+    @Query("SELECT * FROM signal_transitions WHERE mint = :mint ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun forMint(mint: String, limit: Int = 50): List<SignalTransitionEntity>
+
+    @Query("DELETE FROM signal_transitions WHERE timestamp < :cutoff")
+    suspend fun deleteOlderThan(cutoff: Long)
 }
 
 @Dao

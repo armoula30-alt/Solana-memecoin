@@ -37,6 +37,7 @@ fun SignalHistoryScreen(vm: AppViewModel) {
                             Text("${s.score}/100")
                         }
                         Text(sdf.format(Date(s.timestamp)), style = MaterialTheme.typography.bodySmall)
+                        Text("Lifecycle: ${s.lifecycleState ?: "UNKNOWN"}", style = MaterialTheme.typography.bodySmall)
                         Text("Buyers ${s.buyers} / Sellers ${s.sellers} \u2022 Buy $%.0f / Sell $%.0f".format(s.buyVolumeUsd, s.sellVolumeUsd),
                             style = MaterialTheme.typography.bodySmall)
                     }

@@ -162,7 +162,11 @@ data class SignalEntity(
     val sellers: Int,
     val buyVolumeUsd: Double,
     val sellVolumeUsd: Double,
-    val priceUsd: Double?
+    val priceUsd: Double?,
+    val lifecycleState: String? = null,
+    val momentumScore: Int? = null,
+    val manipulationRiskScore: Int? = null,
+    val dataQualityScore: Int? = null
 )
 
 @Entity(
@@ -176,7 +180,28 @@ data class SignalOutcomeEntity(
     val entryPriceUsd: Double,
     val checkTimestamp: Long,
     val hypotheticalChangePct: Double,   // ALWAYS labeled HYPOTHETICAL in the UI - never "profit"
-    val elapsedSeconds: Int
+    val elapsedSeconds: Int,
+    val observedPriceUsd: Double? = null,
+    val signalClass: String? = null,
+    val momentumScore: Int? = null,
+    val riskScore: Int? = null,
+    val dataQualityScore: Int? = null
+)
+
+@Entity(
+    tableName = "signal_transitions",
+    indices = [Index(value = ["mint"]), Index(value = ["timestamp"]), Index(value = ["newState"])]
+)
+data class SignalTransitionEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val mint: String,
+    val timestamp: Long,
+    val previousState: String?,
+    val newState: String,
+    val score: Int,
+    val reasonsJson: String,
+    val manipulationRisk: Int?,
+    val dataQualityScore: Int?
 )
 
 @Entity(tableName = "system_events", indices = [Index(value = ["timestamp"])])
