@@ -3,6 +3,9 @@ package com.solanasignal.app.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.solanasignal.app.data.chart.ChartCandle
+import com.solanasignal.app.data.chart.ChartDataRepository
+import com.solanasignal.app.data.chart.ChartInterval
 import com.solanasignal.app.data.room.entities.SignalEntity
 import com.solanasignal.app.data.room.entities.SystemEventEntity
 import com.solanasignal.app.data.room.entities.TokenEntity
@@ -17,6 +20,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val settings: SettingsRepository = ServiceLocator.settings(ctx)
     private val db = ServiceLocator.database(ctx)
     private val orchestrator = ServiceLocator.orchestrator(ctx)
+    private val chartRepository = ChartDataRepository(db)
 
     val running = orchestrator.running
     val connectionState = orchestrator.connectionState
@@ -55,6 +59,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val since = todayStartMs()
         return db.signalDao().countSince(since)
     }
+
+    suspend fun loadChart(mint: String, interval: ChartInterval): List<ChartCandle> =
+        chartRepository.loadHistory(mint, interval)
 
     private fun todayStartMs(): Long {
         val cal = java.util.Calendar.getInstance()

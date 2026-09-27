@@ -9,12 +9,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.solanasignal.app.data.chart.ChartInterval
 import com.solanasignal.app.photon.PhotonLauncher
 import com.solanasignal.app.ui.AppViewModel
+import com.solanasignal.app.ui.chart.CandleChart
 import com.solanasignal.app.ui.theme.BuyGreen
 import com.solanasignal.app.ui.theme.SellRed
 import com.solanasignal.app.ui.theme.SurfaceRaised
 import com.solanasignal.app.ui.theme.TextMuted
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import org.json.JSONArray
 
 @Composable
@@ -25,6 +29,13 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
 
     val token = tokens.find { it.mint == mint }
     val latestSignal = signals.filter { it.mint == mint }.maxByOrNull { it.timestamp }
+    var chartInterval by remember { mutableStateOf(ChartInterval.ONE_MINUTE) }
+    val candles by produceState(emptyList(), mint, chartInterval) {
+        while (isActive) {
+            value = vm.loadChart(mint, chartInterval)
+            delay(5_000L)
+        }
+    }
 
     val reasons = remember(latestSignal) {
         latestSignal?.reasonsJson?.let { json ->
@@ -52,6 +63,27 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
                         Text(token?.dexPriceChange5mPct?.let { "%+.2f%% since launch".format(it) } ?: "Change UNKNOWN", color = token?.dexPriceChange5mPct?.let { if (it >= 0) BuyGreen else SellRed } ?: TextMuted, style = MaterialTheme.typography.bodySmall)
                     }
                 }
+            }
+        }
+
+        item {
+            DetailCard("PRICE CHART • ${chartInterval.label}") {
+                CandleChart(candles)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                    ChartInterval.values().forEach { interval ->
+                        FilterChip(
+                            selected = chartInterval == interval,
+                            onClick = { chartInterval = interval },
+                            label = { Text(interval.label) }
+                        )
+                    }
+                }
+                Text(
+                    if (candles.isEmpty()) "Chart uses normalized trades received by the app."
+                    else "${candles.size} candles • pinch to zoom • drag to inspect",
+                    color = TextMuted,
+                    style = MaterialTheme.typography.labelSmall
+                )
             }
         }
 
