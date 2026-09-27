@@ -91,11 +91,16 @@ class ScannerOrchestrator(
     fun start() {
         if (_running.value) return
         _running.value = true
-        solPriceProvider.start(scope)
-
-        if (settings.mockMode.value) startMock() else startLive()
-        startDexScreenerEnrichment()
-        startStaleTokenEviction()
+        try {
+            solPriceProvider.start(scope)
+            if (settings.mockMode.value) startMock() else startLive()
+            startDexScreenerEnrichment()
+            startStaleTokenEviction()
+        } catch (e: Exception) {
+            _running.value = false
+            _connectionState.value = ConnectionState.DISCONNECTED
+            logSystemEvent("STARTUP_ERROR", "Scanner could not start: ${e.message ?: e.javaClass.simpleName}")
+        }
     }
 
     fun stop() {

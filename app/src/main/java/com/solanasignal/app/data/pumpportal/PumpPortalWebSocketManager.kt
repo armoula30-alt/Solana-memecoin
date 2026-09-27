@@ -10,8 +10,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.*
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
+import android.net.Uri
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
 import kotlin.math.pow
@@ -151,12 +151,14 @@ class PumpPortalWebSocketManager(
         if (manuallyStopped) return
         val generation = ++socketGeneration
         val apiKey = getApiKey()
-        val httpUrl = BASE_URL.toHttpUrl().newBuilder().apply {
-            apiKey?.takeIf { it.isNotBlank() }?.let { addQueryParameter("api-key", it) }
-        }.build()
+        // Build the wss URL as a string. HttpUrl is an HTTP URL builder and can
+        // throw at runtime for websocket schemes on some OkHttp versions.
+        val url = apiKey?.takeIf { it.isNotBlank() }?.let {
+            "$BASE_URL?api-key=${Uri.encode(it)}"
+        } ?: BASE_URL
         _connectionState.value = if (reconnectAttempt == 0) ConnectionState.CONNECTING else ConnectionState.RECONNECTING
 
-        val request = Request.Builder().url(httpUrl).build()
+        val request = Request.Builder().url(url).build()
         val pingSentAt = longArrayOf(0L)
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
