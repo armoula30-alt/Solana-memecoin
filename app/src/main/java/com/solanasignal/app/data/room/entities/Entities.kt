@@ -71,6 +71,12 @@ data class TokenEntity(
     val aiShouldNotify: Boolean? = null,
     val aiProvider: String? = null,
     val aiAnalyzedAtEpochMs: Long? = null,
+    val momentumScore: Int? = null,
+    val momentumState: String? = null,
+    val momentumPersistencePct: Double? = null,
+    val manipulationRiskScore: Int? = null,
+    val manipulationRiskLevel: String? = null,
+    val manipulationFindingsJson: String? = null,
     val lifecycle: String,          // e.g. NEW, MIGRATED, TRACKING, STALE, REJECTED
     val source: String              // "pumpportal" or "mock"
 )
@@ -132,7 +138,10 @@ data class ScoreEntity(
     val priceMomentum: Double?,
     val liquidity: Double?,
     val holderDistribution: Double?,
-    val safety: Double?
+    val safety: Double?,
+    val advancedMomentum: Double? = null,
+    val manipulationRisk: Double? = null,
+    val dataQuality: Double? = null
 )
 
 @Entity(

@@ -10,6 +10,8 @@ import com.solanasignal.app.data.room.entities.*
 import com.solanasignal.app.data.settings.BatteryMode
 import com.solanasignal.app.data.settings.SettingsRepository
 import com.solanasignal.app.domain.metrics.MetricsEngine
+import com.solanasignal.app.domain.momentum.MomentumEngine
+import com.solanasignal.app.domain.manipulation.ManipulationRiskEngine
 import com.solanasignal.app.domain.safety.SafetyEngine
 import com.solanasignal.app.domain.scoring.ScoringEngine
 import com.solanasignal.app.domain.signals.SignalEngine
@@ -41,6 +43,8 @@ class ScannerOrchestrator(
     private val safetyEngine = SafetyEngine()
     private val scoringEngine = ScoringEngine()
     private val signalEngine = SignalEngine()
+    private val momentumEngine = MomentumEngine()
+    private val manipulationRiskEngine = ManipulationRiskEngine()
     private val solPriceProvider = SolPriceProvider()
     private val dexScreenerClient = DexScreenerClient()
     private val codeCraftClient = CodeCraftClient()
@@ -539,14 +543,39 @@ class ScannerOrchestrator(
             nowMs = nowMs
         )
 
+        val advancedMomentum = momentumEngine.evaluate(windows, token.liquidityUsd)
+        val manipulationRisk = manipulationRiskEngine.evaluate(windows, token.liquidityUsd)
         val weights = settings.scoreWeights.value
-        val score = scoringEngine.score(
+        val baseScore = scoringEngine.score(
             metrics5m = m5, metrics1m = m1,
             holderConcentrationPct = null,
             liquidityUsd = token.liquidityUsd,
             safety = safety,
             weights = weights
         )
+        val manipulationPenalty = manipulationRisk.score ?: 0
+        val adjustedTotal = (
+            baseScore.total * 0.60 +
+                advancedMomentum.score * 0.30 +
+                (100 - manipulationPenalty) * 0.10
+            ).toInt().coerceIn(0, 100)
+        val score = baseScore.copy(
+            total = adjustedTotal,
+            components = baseScore.components + listOf(
+                com.solanasignal.app.domain.scoring.ComponentScore("Advanced Momentum", advancedMomentum.score.toDouble()),
+                com.solanasignal.app.domain.scoring.ComponentScore("Manipulation Risk", manipulationRisk.score?.let { 100.0 - it })
+            )
+        )
+
+        val analyzedToken = token.copy(
+            momentumScore = advancedMomentum.score,
+            momentumState = advancedMomentum.state.name,
+            momentumPersistencePct = advancedMomentum.persistence,
+            manipulationRiskScore = manipulationRisk.score,
+            manipulationRiskLevel = manipulationRisk.level.name,
+            manipulationFindingsJson = JSONArray(manipulationRisk.findings.map { "${it.name}: ${it.explanation}" }).toString()
+        )
+        db.tokenDao().upsert(analyzedToken)
 
         db.scoreDao().insert(
             ScoreEntity(
@@ -557,7 +586,10 @@ class ScannerOrchestrator(
                 priceMomentum = score.components.find { it.label == "Price Momentum" }?.value,
                 liquidity = score.components.find { it.label == "Liquidity" }?.value,
                 holderDistribution = score.components.find { it.label == "Holder Distribution" }?.value,
-                safety = score.components.find { it.label == "Safety" }?.value
+                safety = score.components.find { it.label == "Safety" }?.value,
+                advancedMomentum = advancedMomentum.score.toDouble(),
+                manipulationRisk = manipulationRisk.score?.toDouble(),
+                dataQuality = token.dataQualityScore?.toDouble()
             )
         )
 
@@ -570,7 +602,7 @@ class ScannerOrchestrator(
         )
 
         if (buyDecision.shouldNotify) {
-            persistAndNotify(token, buyDecision.type, score.total, buyDecision.reasons, m5)
+            persistAndNotify(analyzedToken, buyDecision.type, score.total, buyDecision.reasons, m5)
         }
 
         val prevScore = lastScoreByMint[mint]
@@ -581,7 +613,7 @@ class ScannerOrchestrator(
                 metrics5m = m5, safety = safety, config = config, nowMs = nowMs
             )
             if (sellDecision != null && sellDecision.shouldNotify) {
-                persistAndNotify(token, SignalType.SELL, score.total, sellDecision.reasons, m5)
+                persistAndNotify(analyzedToken, SignalType.SELL, score.total, sellDecision.reasons, m5)
             }
         }
     }

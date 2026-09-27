@@ -51,6 +51,18 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
         }
 
         token?.let { t ->
+            if (t.momentumScore != null || t.manipulationRiskScore != null) {
+                item {
+                    DetailCard("Advanced Intelligence") {
+                        Row("Momentum score", t.momentumScore?.let { "$it/100" } ?: "UNKNOWN")
+                        Row("Momentum state", t.momentumState ?: "UNKNOWN")
+                        Row("Persistence", t.momentumPersistencePct?.let { "%.0f%%".format(it) } ?: "UNKNOWN")
+                        Row("Manipulation risk", t.manipulationRiskScore?.let { "$it/100" } ?: "UNKNOWN")
+                        Row("Risk level", t.manipulationRiskLevel ?: "UNKNOWN")
+                        JsonListSection("Risk findings", t.manipulationFindingsJson, "⚠")
+                    }
+                }
+            }
             if (t.dexId != null) {
                 item {
                     DetailCard("DexScreener") {
