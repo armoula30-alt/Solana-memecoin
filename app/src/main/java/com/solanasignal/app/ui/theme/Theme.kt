@@ -10,7 +10,9 @@ val SellRed = Color(0xFFEF4444)
 val WatchAmber = Color(0xFFF59E0B)
 val BgDark = Color(0xFF0B0E14)
 val SurfaceDark = Color(0xFF141A24)
+val SurfaceRaised = Color(0xFF1B2330)
 val TextMuted = Color(0xFF8B93A7)
+val NeutralBlue = Color(0xFF60A5FA)
 
 private val DarkColors = darkColorScheme(
     primary = BuyGreen,

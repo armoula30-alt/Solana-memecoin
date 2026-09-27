@@ -11,6 +11,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.solanasignal.app.photon.PhotonLauncher
 import com.solanasignal.app.ui.AppViewModel
+import com.solanasignal.app.ui.theme.BuyGreen
+import com.solanasignal.app.ui.theme.SellRed
+import com.solanasignal.app.ui.theme.SurfaceRaised
+import com.solanasignal.app.ui.theme.TextMuted
 import org.json.JSONArray
 
 @Composable
@@ -33,8 +37,22 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
 
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
-            Text("\$${token?.symbol ?: mint.take(6)}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text(token?.name ?: "Unknown name", style = MaterialTheme.typography.bodyMedium)
+            Card(colors = CardDefaults.cardColors(containerColor = SurfaceRaised), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("\$${token?.symbol ?: mint.take(6)}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                            Text(token?.name ?: "Unknown name", color = TextMuted, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        StateBadge(token?.lifecycle ?: "UNKNOWN")
+                    }
+                    Text("Mint ${mint.take(10)}...", color = TextMuted, style = MaterialTheme.typography.labelSmall)
+                    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(token?.lastPriceUsd?.let { "\$%.8f".format(it) } ?: "Price UNKNOWN", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(token?.dexPriceChange5mPct?.let { "%+.2f%% since launch".format(it) } ?: "Change UNKNOWN", color = token?.dexPriceChange5mPct?.let { if (it >= 0) BuyGreen else SellRed } ?: TextMuted, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
         }
 
         item {
@@ -210,4 +228,14 @@ private fun formatAge(milliseconds: Long): String {
         seconds < 3600 -> "${seconds / 60}m"
         else -> "${seconds / 3600}h"
     }
+}
+
+@Composable
+private fun StateBadge(state: String) {
+    val color = when (state) {
+        "STRONG_MOMENTUM", "EXTREME_MOMENTUM", "EARLY_MOMENTUM" -> BuyGreen
+        "INVALIDATED", "AVOID", "COLLAPSING" -> SellRed
+        else -> MaterialTheme.colorScheme.secondary
+    }
+    AssistChip(onClick = {}, label = { Text(state, color = color) })
 }
