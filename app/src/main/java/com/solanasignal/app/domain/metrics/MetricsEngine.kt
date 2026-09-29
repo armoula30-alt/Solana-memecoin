@@ -26,11 +26,13 @@ data class WindowMetrics(
     val buySellVolumeRatio: Double get() = buyVolumeUsd / maxOf(sellVolumeUsd, 1.0)                  // spec #14
 }
 
+private const val WINDOW_10S = 10
 private const val WINDOW_30S = 30
 private const val WINDOW_1M = 60
 private const val WINDOW_3M = 180
 private const val WINDOW_5M = 300
-val TRACKED_WINDOWS = listOf(WINDOW_30S, WINDOW_1M, WINDOW_3M, WINDOW_5M)
+private const val WINDOW_10M = 600
+val TRACKED_WINDOWS = listOf(WINDOW_10S, WINDOW_30S, WINDOW_1M, WINDOW_3M, WINDOW_5M, WINDOW_10M)
 
 /**
  * Maintains an in-memory rolling trade buffer per token and computes the metrics
@@ -54,7 +56,7 @@ class MetricsEngine {
         synchronized(list) {
             list.add(TradePoint(side, trader, amountUsd, priceUsd, timestampEpochMs))
             // Trim anything older than the largest tracked window to bound memory.
-            val cutoff = timestampEpochMs - WINDOW_5M * 1000L
+            val cutoff = timestampEpochMs - WINDOW_10M * 1000L
             list.removeAll { it.ts < cutoff }
         }
     }

@@ -72,8 +72,11 @@ class SettingsRepository private constructor(context: Context) {
     private val _filterConfig = MutableStateFlow(loadFilterConfig())
     val filterConfig: StateFlow<FilterConfig> = _filterConfig.asStateFlow()
 
-    private val _scoreWeights = MutableStateFlow(ScoreWeights())
+    private val _scoreWeights = MutableStateFlow(loadScoreWeights())
     val scoreWeights: StateFlow<ScoreWeights> = _scoreWeights.asStateFlow()
+
+    private val _engineConfig = MutableStateFlow(loadEngineConfig())
+    val engineConfig: StateFlow<EngineConfig> = _engineConfig.asStateFlow()
 
     private val _batteryMode = MutableStateFlow(BatteryMode.BALANCED)
     val batteryMode: StateFlow<BatteryMode> = _batteryMode.asStateFlow()
@@ -136,10 +139,34 @@ class SettingsRepository private constructor(context: Context) {
             .putInt(KEY_FILTER_WATCH_FLOOR, normalized.watchScoreFloor)
             .putInt(KEY_FILTER_BUY_COOLDOWN, normalized.buySignalCooldownSeconds)
             .putInt(KEY_FILTER_SELL_COOLDOWN, normalized.sellSignalCooldownSeconds)
+            .putBoolean(KEY_FILTER_BUYERS, normalized.requireBuyersGtSellers)
+            .putBoolean(KEY_FILTER_VOLUME, normalized.requireBuyVolumeGtSellVolume)
+            .putInt(KEY_FILTER_RESIGNAL_DELTA, normalized.resignalScoreDelta)
             .apply()
         _filterConfig.value = normalized
     }
-    fun updateWeights(weights: ScoreWeights) { _scoreWeights.value = weights }
+    fun updateWeights(weights: ScoreWeights) {
+        securePrefs.edit()
+            .putString(KEY_WEIGHT_BUYER, weights.buyerPressure.toString())
+            .putString(KEY_WEIGHT_VOLUME, weights.volumePressure.toString())
+            .putString(KEY_WEIGHT_VELOCITY, weights.volumeVelocity.toString())
+            .putString(KEY_WEIGHT_PRICE, weights.priceMomentum.toString())
+            .putString(KEY_WEIGHT_LIQUIDITY, weights.liquidity.toString())
+            .putString(KEY_WEIGHT_HOLDERS, weights.holderDistribution.toString())
+            .putString(KEY_WEIGHT_SAFETY, weights.safety.toString())
+            .apply()
+        _scoreWeights.value = weights
+    }
+    fun updateEngineConfig(config: EngineConfig) {
+        securePrefs.edit()
+            .putInt(KEY_ENGINE_MIN_OBSERVATIONS, config.minimumObservationCount)
+            .putString(KEY_ENGINE_MIN_LIQUIDITY, config.minimumLiquidityUsd.toString())
+            .putInt(KEY_ENGINE_FRESHNESS, config.dataFreshnessSeconds)
+            .putString(KEY_ENGINE_SPIKE_SHARE, config.antiSpikeLargestTradeShare.toString())
+            .putInt(KEY_ENGINE_SPIKE_BUYERS, config.antiSpikeMinimumUniqueBuyers)
+            .apply()
+        _engineConfig.value = config
+    }
     fun setBatteryMode(mode: BatteryMode) { _batteryMode.value = mode }
     fun setMockMode(enabled: Boolean) { _mockMode.value = enabled }
     fun setRetentionPolicy(policy: RetentionPolicy) { _retentionPolicy.value = policy }
@@ -150,7 +177,28 @@ class SettingsRepository private constructor(context: Context) {
         minScoreForBuy = securePrefs.getInt(KEY_FILTER_MIN_BUY_SCORE, 80),
         watchScoreFloor = securePrefs.getInt(KEY_FILTER_WATCH_FLOOR, 70),
         buySignalCooldownSeconds = securePrefs.getInt(KEY_FILTER_BUY_COOLDOWN, 120),
-        sellSignalCooldownSeconds = securePrefs.getInt(KEY_FILTER_SELL_COOLDOWN, 60)
+        sellSignalCooldownSeconds = securePrefs.getInt(KEY_FILTER_SELL_COOLDOWN, 60),
+        requireBuyersGtSellers = securePrefs.getBoolean(KEY_FILTER_BUYERS, true),
+        requireBuyVolumeGtSellVolume = securePrefs.getBoolean(KEY_FILTER_VOLUME, true),
+        resignalScoreDelta = securePrefs.getInt(KEY_FILTER_RESIGNAL_DELTA, 8)
+    )
+
+    private fun loadScoreWeights(): ScoreWeights = ScoreWeights(
+        buyerPressure = securePrefs.getString(KEY_WEIGHT_BUYER, "0.25")?.toDoubleOrNull() ?: 0.25,
+        volumePressure = securePrefs.getString(KEY_WEIGHT_VOLUME, "0.25")?.toDoubleOrNull() ?: 0.25,
+        volumeVelocity = securePrefs.getString(KEY_WEIGHT_VELOCITY, "0.15")?.toDoubleOrNull() ?: 0.15,
+        priceMomentum = securePrefs.getString(KEY_WEIGHT_PRICE, "0.10")?.toDoubleOrNull() ?: 0.10,
+        liquidity = securePrefs.getString(KEY_WEIGHT_LIQUIDITY, "0.10")?.toDoubleOrNull() ?: 0.10,
+        holderDistribution = securePrefs.getString(KEY_WEIGHT_HOLDERS, "0.10")?.toDoubleOrNull() ?: 0.10,
+        safety = securePrefs.getString(KEY_WEIGHT_SAFETY, "0.05")?.toDoubleOrNull() ?: 0.05
+    )
+
+    private fun loadEngineConfig(): EngineConfig = EngineConfig(
+        minimumObservationCount = securePrefs.getInt(KEY_ENGINE_MIN_OBSERVATIONS, 3),
+        minimumLiquidityUsd = securePrefs.getString(KEY_ENGINE_MIN_LIQUIDITY, "5000.0")?.toDoubleOrNull() ?: 5_000.0,
+        dataFreshnessSeconds = securePrefs.getInt(KEY_ENGINE_FRESHNESS, 30),
+        antiSpikeLargestTradeShare = securePrefs.getString(KEY_ENGINE_SPIKE_SHARE, "0.60")?.toDoubleOrNull() ?: 0.60,
+        antiSpikeMinimumUniqueBuyers = securePrefs.getInt(KEY_ENGINE_SPIKE_BUYERS, 3)
     )
 
     companion object {
@@ -163,6 +211,21 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_FILTER_WATCH_FLOOR = "filter_watch_score_floor"
         private const val KEY_FILTER_BUY_COOLDOWN = "filter_buy_cooldown_seconds"
         private const val KEY_FILTER_SELL_COOLDOWN = "filter_sell_cooldown_seconds"
+        private const val KEY_FILTER_BUYERS = "filter_require_buyers"
+        private const val KEY_FILTER_VOLUME = "filter_require_buy_volume"
+        private const val KEY_FILTER_RESIGNAL_DELTA = "filter_resignal_delta"
+        private const val KEY_WEIGHT_BUYER = "weight_buyer_pressure"
+        private const val KEY_WEIGHT_VOLUME = "weight_volume_pressure"
+        private const val KEY_WEIGHT_VELOCITY = "weight_volume_velocity"
+        private const val KEY_WEIGHT_PRICE = "weight_price_momentum"
+        private const val KEY_WEIGHT_LIQUIDITY = "weight_liquidity"
+        private const val KEY_WEIGHT_HOLDERS = "weight_holder_distribution"
+        private const val KEY_WEIGHT_SAFETY = "weight_safety"
+        private const val KEY_ENGINE_MIN_OBSERVATIONS = "engine_min_observations"
+        private const val KEY_ENGINE_MIN_LIQUIDITY = "engine_min_liquidity_usd"
+        private const val KEY_ENGINE_FRESHNESS = "engine_data_freshness_seconds"
+        private const val KEY_ENGINE_SPIKE_SHARE = "engine_anti_spike_largest_share"
+        private const val KEY_ENGINE_SPIKE_BUYERS = "engine_anti_spike_min_buyers"
         const val DEFAULT_CODECRAFT_MODEL = "claude-opus-4.8"
 
         @Volatile private var instance: SettingsRepository? = null

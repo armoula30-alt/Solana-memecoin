@@ -10,6 +10,7 @@ import com.solanasignal.app.data.room.entities.*
 import com.solanasignal.app.data.settings.BatteryMode
 import com.solanasignal.app.data.settings.SettingsRepository
 import com.solanasignal.app.domain.metrics.MetricsEngine
+import com.solanasignal.app.domain.evidence.SignalEvidenceEngine
 import com.solanasignal.app.domain.momentum.MomentumEngine
 import com.solanasignal.app.domain.manipulation.ManipulationRiskEngine
 import com.solanasignal.app.domain.safety.SafetyEngine
@@ -47,6 +48,7 @@ class ScannerOrchestrator(
     private val signalEngine = SignalEngine()
     private val momentumEngine = MomentumEngine()
     private val manipulationRiskEngine = ManipulationRiskEngine()
+    private val signalEvidenceEngine = SignalEvidenceEngine()
     private val signalLifecycleEngine = SignalLifecycleEngine()
     private val solPriceProvider = SolPriceProvider()
     private val dexScreenerClient = DexScreenerClient()
@@ -551,6 +553,31 @@ class ScannerOrchestrator(
 
         val advancedMomentum = momentumEngine.evaluate(windows, token.liquidityUsd)
         val manipulationRisk = manipulationRiskEngine.evaluate(windows, token.liquidityUsd)
+        val evidence = signalEvidenceEngine.evaluate(
+            windows = windows,
+            marketCapUsd = token.marketCapUsd,
+            liquidityUsd = token.liquidityUsd,
+            nowMs = nowMs,
+            latestTradeAtMs = lastActivityByMint[mint],
+            config = settings.engineConfig.value
+        )
+        db.featureSnapshotDao().insertObservation(
+            TokenObservationEntity(
+                mint = mint, timestamp = nowMs, priceUsd = token.lastPriceUsd,
+                marketCapUsd = token.marketCapUsd, liquidityUsd = token.liquidityUsd,
+                buyVolumeUsd = m5.buyVolumeUsd, sellVolumeUsd = m5.sellVolumeUsd,
+                buyers = m5.uniqueBuyers, sellers = m5.uniqueSellers, source = token.source
+            )
+        )
+        db.featureSnapshotDao().insertSnapshot(
+            TokenFeatureSnapshotEntity(
+                mint = mint, timestamp = nowMs, opportunityScore = evidence.momentumScore,
+                momentumScore = evidence.momentumScore, riskScore = evidence.collapseRisk,
+                qualityScore = evidence.signalQuality, dataConfidenceScore = evidence.dataConfidence,
+                featuresJson = org.json.JSONObject(evidence.featureValues.mapValues { it.value ?: org.json.JSONObject.NULL }).toString(),
+                classification = evidence.classification
+            )
+        )
         val previousLifecycle = runCatching { SignalLifecycleState.valueOf(token.lifecycle) }.getOrNull()
         val lifecycleTransition = signalLifecycleEngine.transition(
             previous = previousLifecycle,
@@ -603,10 +630,14 @@ class ScannerOrchestrator(
             momentumScore = advancedMomentum.score,
             momentumState = advancedMomentum.state.name,
             momentumPersistencePct = advancedMomentum.persistence,
-            manipulationRiskScore = manipulationRisk.score,
-            manipulationRiskLevel = manipulationRisk.level.name,
-            manipulationFindingsJson = JSONArray(manipulationRisk.findings.map { "${it.name}: ${it.explanation}" }).toString()
-        )
+                manipulationRiskScore = manipulationRisk.score,
+                manipulationRiskLevel = manipulationRisk.level.name,
+                manipulationFindingsJson = JSONArray(manipulationRisk.findings.map { "${it.name}: ${it.explanation}" }).toString(),
+                opportunityScore = evidence.momentumScore,
+                qualityScore = evidence.signalQuality,
+                dataConfidenceScore = evidence.dataConfidence,
+                evidenceJson = org.json.JSONObject(mapOf("classification" to evidence.classification, "reasons" to JSONArray(evidence.reasons), "warnings" to JSONArray(evidence.warnings))).toString()
+            )
         db.tokenDao().upsert(analyzedToken)
 
         db.scoreDao().insert(

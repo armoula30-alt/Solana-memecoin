@@ -78,7 +78,11 @@ data class TokenEntity(
     val manipulationRiskLevel: String? = null,
     val manipulationFindingsJson: String? = null,
     val lifecycle: String,          // e.g. NEW, MIGRATED, TRACKING, STALE, REJECTED
-    val source: String              // "pumpportal" or "mock"
+    val source: String,              // "pumpportal" or "mock"
+    val opportunityScore: Int? = null,
+    val qualityScore: Int? = null,
+    val dataConfidenceScore: Int? = null,
+    val evidenceJson: String? = null
 )
 
 @Entity(
@@ -141,7 +145,10 @@ data class ScoreEntity(
     val safety: Double?,
     val advancedMomentum: Double? = null,
     val manipulationRisk: Double? = null,
-    val dataQuality: Double? = null
+    val dataQuality: Double? = null,
+    val opportunity: Double? = null,
+    val quality: Double? = null,
+    val dataConfidence: Double? = null
 )
 
 @Entity(
@@ -166,7 +173,47 @@ data class SignalEntity(
     val lifecycleState: String? = null,
     val momentumScore: Int? = null,
     val manipulationRiskScore: Int? = null,
-    val dataQualityScore: Int? = null
+    val dataQualityScore: Int? = null,
+    val opportunityScore: Int? = null,
+    val qualityScore: Int? = null,
+    val dataConfidenceScore: Int? = null
+)
+
+/** High-frequency raw observation used for reproducible walk-forward evaluation. */
+@Entity(
+    tableName = "token_observations",
+    indices = [Index(value = ["mint", "timestamp"])]
+)
+data class TokenObservationEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val mint: String,
+    val timestamp: Long,
+    val priceUsd: Double?,
+    val marketCapUsd: Double?,
+    val liquidityUsd: Double?,
+    val buyVolumeUsd: Double,
+    val sellVolumeUsd: Double,
+    val buyers: Int,
+    val sellers: Int,
+    val source: String
+)
+
+/** Immutable feature vector and independent scores at one evaluation point. */
+@Entity(
+    tableName = "token_feature_snapshots",
+    indices = [Index(value = ["mint", "timestamp"])]
+)
+data class TokenFeatureSnapshotEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val mint: String,
+    val timestamp: Long,
+    val opportunityScore: Int?,
+    val momentumScore: Int?,
+    val riskScore: Int?,
+    val qualityScore: Int?,
+    val dataConfidenceScore: Int,
+    val featuresJson: String,
+    val classification: String
 )
 
 @Entity(

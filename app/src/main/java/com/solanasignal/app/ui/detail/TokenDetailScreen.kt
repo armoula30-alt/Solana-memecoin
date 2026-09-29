@@ -111,7 +111,11 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
                         Row("Persistence", t.momentumPersistencePct?.let { "%.0f%%".format(it) } ?: "UNKNOWN")
                         Row("Manipulation risk", t.manipulationRiskScore?.let { "$it/100" } ?: "UNKNOWN")
                         Row("Risk level", t.manipulationRiskLevel ?: "UNKNOWN")
+                        Row("Opportunity", t.opportunityScore?.let { "$it/100" } ?: "UNKNOWN")
+                        Row("Signal quality", t.qualityScore?.let { "$it/100" } ?: "UNKNOWN")
+                        Row("Data confidence", t.dataConfidenceScore?.let { "$it/100" } ?: "UNKNOWN")
                         JsonListSection("Risk findings", t.manipulationFindingsJson, "⚠")
+                        t.evidenceJson?.let { Text("Evidence: $it", style = MaterialTheme.typography.bodySmall) }
                     }
                 }
             }
