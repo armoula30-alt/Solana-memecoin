@@ -21,6 +21,7 @@ fun PaperTerminalScreen(vm: AppViewModel) {
     val trades by vm.paperTrades.collectAsState()
     val watchlist by vm.paperWatchlist.collectAsState()
     val analytics by vm.paperAnalytics.collectAsState()
+    val autoStatus by vm.autoPaperStatus.collectAsState()
     var selectedMint by remember { mutableStateOf<String?>(null) }
     var amount by remember { mutableStateOf("25") }
     var search by remember { mutableStateOf("") }
@@ -53,6 +54,23 @@ fun PaperTerminalScreen(vm: AppViewModel) {
                         Text("Closed trades ${analytics.closedTrades}", style = MaterialTheme.typography.labelSmall)
                         Text("Win rate ${analytics.winRate?.let { "%.0f%%".format(it * 100) } ?: "UNKNOWN"}", style = MaterialTheme.typography.labelSmall)
                     }
+                }
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column(Modifier.weight(1f)) {
+                            Text("AUTO PAPER-TRADING", fontWeight = FontWeight.Bold)
+                            Text(if (autoStatus.enabled) "RUNNING • simulation only" else "OFF • manual approval mode", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(checked = autoStatus.enabled, onCheckedChange = vm::setAutoPaperTrading)
+                    }
+                    Text("Entry: Momentum ≥ 80 • Risk ≤ 40 • Confidence ≥ 70 • rising MC • liquidity ≥ $5k", style = MaterialTheme.typography.labelSmall)
+                    Text("TP +30% • SL -15% • cooldown 120s • max 5 positions", style = MaterialTheme.typography.labelSmall)
+                    Text("${autoStatus.state}: ${autoStatus.lastDecision}", style = MaterialTheme.typography.bodySmall)
+                    Text("Auto entries ${autoStatus.entries} • auto exits ${autoStatus.exits}", style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
