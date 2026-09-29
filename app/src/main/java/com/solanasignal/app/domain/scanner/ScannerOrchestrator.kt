@@ -10,6 +10,8 @@ import com.solanasignal.app.data.room.entities.*
 import com.solanasignal.app.data.settings.BatteryMode
 import com.solanasignal.app.data.settings.SettingsRepository
 import com.solanasignal.app.domain.metrics.MetricsEngine
+import com.solanasignal.app.domain.mc.McObservation
+import com.solanasignal.app.domain.mc.McTrendPressureEngine
 import com.solanasignal.app.domain.evidence.SignalEvidenceEngine
 import com.solanasignal.app.domain.momentum.MomentumEngine
 import com.solanasignal.app.domain.manipulation.ManipulationRiskEngine
@@ -49,6 +51,7 @@ class ScannerOrchestrator(
     private val momentumEngine = MomentumEngine()
     private val manipulationRiskEngine = ManipulationRiskEngine()
     private val signalEvidenceEngine = SignalEvidenceEngine()
+    private val mcTrendPressureEngine = McTrendPressureEngine()
     private val signalLifecycleEngine = SignalLifecycleEngine()
     private val solPriceProvider = SolPriceProvider()
     private val dexScreenerClient = DexScreenerClient()
@@ -587,6 +590,16 @@ class ScannerOrchestrator(
             marketCapHistory = marketCapHistoryByMint[mint].orEmpty(),
             config = settings.engineConfig.value
         )
+        val mcTrend = mcTrendPressureEngine.evaluate(
+            observations = marketCapHistoryByMint[mint].orEmpty().map { McObservation(it.first, it.second) },
+            windowSeconds = settings.engineConfig.value.mcAnalysisWindowsSeconds,
+            nowMs = nowMs
+        )
+        val mcHistory = marketCapHistoryByMint[mint].orEmpty()
+        val mcDelta = mcHistory.takeIf { it.size >= 2 }?.let { it[it.lastIndex].second - it[it.lastIndex - 1].second }
+        val mcVelocityPctPerMinute = mcTrend.primary?.velocityPerSecond?.let { velocity ->
+            token.marketCapUsd?.takeIf { it > 0.0 }?.let { velocity / it * 60.0 * 100.0 }
+        }
         db.featureSnapshotDao().insertObservation(
             TokenObservationEntity(
                 mint = mint, timestamp = nowMs, priceUsd = token.lastPriceUsd,
@@ -600,8 +613,24 @@ class ScannerOrchestrator(
                 mint = mint, timestamp = nowMs, opportunityScore = evidence.momentumScore,
                 momentumScore = evidence.momentumScore, riskScore = evidence.collapseRisk,
                 qualityScore = evidence.signalQuality, dataConfidenceScore = evidence.dataConfidence,
-                featuresJson = org.json.JSONObject(evidence.featureValues.mapValues { it.value ?: org.json.JSONObject.NULL }).toString(),
-                classification = evidence.classification
+                featuresJson = org.json.JSONObject((evidence.featureValues + mapOf(
+                    "mcDirectionalPressure" to mcTrend.primary?.directionalPressure,
+                    "mcPersistence" to mcTrend.primary?.persistence,
+                    "mcClassification" to mcTrend.primary?.classification?.name
+                )).mapValues { it.value ?: org.json.JSONObject.NULL }).toString(),
+                classification = evidence.classification,
+                mcDelta = mcDelta,
+                mcVelocity = mcTrend.primary?.velocityPerSecond,
+                mcAcceleration = mcTrend.primary?.accelerationPerSecond,
+                mcDirectionalPressure = mcTrend.primary?.directionalPressure,
+                mcPersistence = mcTrend.primary?.persistence,
+                mcNetChange = mcTrend.primary?.netMcChange,
+                mcNetChangePct = mcTrend.primary?.netMcChangePercent,
+                mcRecentHigh = mcTrend.primary?.recentHigh,
+                mcDrawdownPct = mcTrend.primary?.drawdownFromHighPct,
+                mcHigherHighCount = mcTrend.primary?.higherHighCount,
+                mcLowerHighCount = mcTrend.primary?.lowerHighCount,
+                mcTrendClassification = mcTrend.primary?.classification?.name
             )
         )
         val previousLifecycle = runCatching { SignalLifecycleState.valueOf(token.lifecycle) }.getOrNull()
@@ -663,8 +692,8 @@ class ScannerOrchestrator(
                 qualityScore = evidence.signalQuality,
                 dataConfidenceScore = evidence.dataConfidence,
                 evidenceJson = org.json.JSONObject(mapOf("classification" to evidence.classification, "reasons" to JSONArray(evidence.reasons), "warnings" to JSONArray(evidence.warnings))).toString(),
-                marketCapVelocityPct = evidence.marketCapVelocityPct,
-                marketCapAccelerationPct = evidence.marketCapAccelerationPct
+                marketCapVelocityPct = mcVelocityPctPerMinute,
+                marketCapAccelerationPct = mcTrend.primary?.accelerationPerSecond
             )
         db.tokenDao().upsert(analyzedToken)
 
@@ -690,7 +719,7 @@ class ScannerOrchestrator(
         val buyDecision = signalEngine.evaluate(
             mint = mint, ageSeconds = ageSeconds, marketCapUsd = token.marketCapUsd,
             metrics5m = m5, score = score, safety = safety, config = config, nowMs = nowMs,
-            marketCapVelocityPct = evidence.marketCapVelocityPct
+            marketCapVelocityPct = mcVelocityPctPerMinute
         )
 
         if (buyDecision.shouldNotify) {

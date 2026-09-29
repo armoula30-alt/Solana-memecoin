@@ -215,7 +215,19 @@ data class TokenFeatureSnapshotEntity(
     val qualityScore: Int?,
     val dataConfidenceScore: Int,
     val featuresJson: String,
-    val classification: String
+    val classification: String,
+    val mcDelta: Double? = null,
+    val mcVelocity: Double? = null,
+    val mcAcceleration: Double? = null,
+    val mcDirectionalPressure: Double? = null,
+    val mcPersistence: Double? = null,
+    val mcNetChange: Double? = null,
+    val mcNetChangePct: Double? = null,
+    val mcRecentHigh: Double? = null,
+    val mcDrawdownPct: Double? = null,
+    val mcHigherHighCount: Int? = null,
+    val mcLowerHighCount: Int? = null,
+    val mcTrendClassification: String? = null
 )
 
 @Entity(

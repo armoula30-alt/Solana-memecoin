@@ -3,6 +3,8 @@ package com.solanasignal.app.data.settings
 /** Central, transparent configuration for the quantitative signal engine. */
 data class EngineConfig(
     val windowsSeconds: List<Int> = listOf(10, 30, 60, 180, 300, 600),
+    val mcSamplingIntervalSeconds: Int = 10,
+    val mcAnalysisWindowsSeconds: List<Int> = listOf(60, 180, 300),
     val minimumObservationCount: Int = 3,
     val minimumLiquidityUsd: Double = 5_000.0,
     val dataFreshnessSeconds: Int = 30,
