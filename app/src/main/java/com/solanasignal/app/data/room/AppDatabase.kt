@@ -21,9 +21,10 @@ import com.solanasignal.app.data.room.entities.*
         PaperPortfolioEntity::class,
         PaperPositionEntity::class,
         PaperTradeEntity::class,
+        PaperWatchlistEntity::class,
         SystemEventEntity::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

@@ -5,8 +5,9 @@ import com.solanasignal.app.data.room.entities.TradeEntity
 
 
 enum class ChartInterval(val seconds: Int, val label: String) {
-    FIVE_SECONDS(5, "5s"), FIFTEEN_SECONDS(15, "15s"), ONE_MINUTE(60, "1m"),
-    FIVE_MINUTES(300, "5m"), FIFTEEN_MINUTES(900, "15m")
+    TEN_SECONDS(10, "10s"), THIRTY_SECONDS(30, "30s"), ONE_MINUTE(60, "1m"),
+    THREE_MINUTES(180, "3m"), FIVE_MINUTES(300, "5m"), FIFTEEN_MINUTES(900, "15m"),
+    THIRTY_MINUTES(1800, "30m"), ONE_HOUR(3600, "1h")
 }
 
 data class ChartCandle(

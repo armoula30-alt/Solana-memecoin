@@ -7,10 +7,20 @@ import androidx.room.Query
 import com.solanasignal.app.data.room.entities.PaperPortfolioEntity
 import com.solanasignal.app.data.room.entities.PaperPositionEntity
 import com.solanasignal.app.data.room.entities.PaperTradeEntity
+import com.solanasignal.app.data.room.entities.PaperWatchlistEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PaperTradingDao {
+    @Query("SELECT * FROM paper_watchlist ORDER BY addedAt DESC")
+    fun observeWatchlist(): Flow<List<PaperWatchlistEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun addWatchlist(value: PaperWatchlistEntity)
+
+    @Query("DELETE FROM paper_watchlist WHERE mint = :mint")
+    suspend fun removeWatchlist(mint: String)
+
     @Query("SELECT * FROM paper_portfolio WHERE id = 1")
     suspend fun portfolio(): PaperPortfolioEntity?
 

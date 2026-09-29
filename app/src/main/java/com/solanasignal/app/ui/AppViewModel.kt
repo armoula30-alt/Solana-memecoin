@@ -12,6 +12,7 @@ import com.solanasignal.app.data.room.entities.TokenEntity
 import com.solanasignal.app.data.room.entities.PaperPortfolioEntity
 import com.solanasignal.app.data.room.entities.PaperPositionEntity
 import com.solanasignal.app.data.room.entities.PaperTradeEntity
+import com.solanasignal.app.data.room.entities.PaperWatchlistEntity
 import com.solanasignal.app.domain.paper.PaperTradeResult
 import com.solanasignal.app.domain.paper.PaperTradingEngine
 import com.solanasignal.app.data.settings.*
@@ -53,6 +54,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         db.paperTradingDao().observePositions().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val paperTrades: StateFlow<List<PaperTradeEntity>> =
         db.paperTradingDao().observeTrades().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val paperWatchlist: StateFlow<List<PaperWatchlistEntity>> =
+        db.paperTradingDao().observeWatchlist().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val paperAnalytics: StateFlow<PaperAnalytics> = combine(paperPortfolio, paperPositions, paperTrades, tokens) { portfolio, positions, trades, marketTokens ->
+        val tokenMap = marketTokens.associateBy { it.mint }
+        val unrealized = positions.sumOf { position ->
+            val current = tokenMap[position.mint]?.lastPriceUsd ?: position.currentPriceUsd
+            (current - position.averageEntryPriceUsd) * position.quantity
+        }
+        val completed = trades.filter { it.side == "PAPER_SELL" }
+        val wins = completed.count { (it.realizedPnlUsd ?: 0.0) > 0.0 }
+        val losses = completed.count { (it.realizedPnlUsd ?: 0.0) < 0.0 }
+        PaperAnalytics(portfolio?.cashUsd ?: 1_000.0, unrealized, portfolio?.realizedPnlUsd ?: 0.0, completed.size, if (completed.isEmpty()) null else wins.toDouble() / completed.size, wins, losses)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), PaperAnalytics())
 
     fun startScanner() = orchestrator.start()
     fun stopScanner() = orchestrator.stop()
@@ -68,6 +83,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     suspend fun resetPaperPortfolio() = paperEngine.reset()
+
+    fun addToWatchlist(mint: String) { viewModelScope.launch { db.paperTradingDao().addWatchlist(PaperWatchlistEntity(mint)) } }
+    fun removeFromWatchlist(mint: String) { viewModelScope.launch { db.paperTradingDao().removeWatchlist(mint) } }
 
     fun setApiKey(key: String) = settings.setApiKey(key)
     fun clearApiKey() = settings.clearApiKey()
@@ -97,3 +115,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return cal.timeInMillis
     }
 }
+
+data class PaperAnalytics(
+    val cashUsd: Double = 1_000.0,
+    val unrealizedPnlUsd: Double = 0.0,
+    val realizedPnlUsd: Double = 0.0,
+    val closedTrades: Int = 0,
+    val winRate: Double? = null,
+    val wins: Int = 0,
+    val losses: Int = 0
+)
