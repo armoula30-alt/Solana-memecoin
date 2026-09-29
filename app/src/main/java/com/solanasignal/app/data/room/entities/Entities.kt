@@ -82,7 +82,9 @@ data class TokenEntity(
     val opportunityScore: Int? = null,
     val qualityScore: Int? = null,
     val dataConfidenceScore: Int? = null,
-    val evidenceJson: String? = null
+    val evidenceJson: String? = null,
+    val marketCapVelocityPct: Double? = null,
+    val marketCapAccelerationPct: Double? = null
 )
 
 @Entity(

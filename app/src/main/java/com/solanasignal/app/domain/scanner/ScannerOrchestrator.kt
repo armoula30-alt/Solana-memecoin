@@ -60,6 +60,7 @@ class ScannerOrchestrator(
     private var dexScreenerJob: Job? = null
 
     private val lastScoreByMint = ConcurrentHashMap<String, Int>()
+    private val marketCapHistoryByMint = ConcurrentHashMap<String, MutableList<Pair<Long, Double>>>()
     private val trackedMints = ConcurrentHashMap.newKeySet<String>()
     private val lastActivityByMint = ConcurrentHashMap<String, Long>()
     private val lastAiAnalysisByMint = ConcurrentHashMap<String, Long>()
@@ -301,6 +302,7 @@ class ScannerOrchestrator(
             source = if (settings.mockMode.value) "mock" else "pumpportal"
         )
         db.tokenDao().upsert(token)
+        recordMarketCap(event.mint, event.receivedAtEpochMs, token.marketCapUsd)
 
         val maxTracked = maxTrackedForBatteryMode()
         if (trackedMints.size < maxTracked) {
@@ -341,15 +343,17 @@ class ScannerOrchestrator(
         metricsEngine.record(event.mint, event.side, event.trader, amountUsd, priceUsd, event.timestampEpochMs)
 
         db.tokenDao().getByMint(event.mint)?.let { token ->
+            val currentMarketCapUsd = usd(event.marketCapSol, solPrice) ?: token.marketCapUsd
             db.tokenDao().upsert(
                 token.copy(
                     lastPriceUsd = priceUsd ?: token.lastPriceUsd,
                     marketCapSol = event.marketCapSol ?: token.marketCapSol,
                     liquiditySol = event.vSolInBondingCurve ?: token.liquiditySol,
-                    marketCapUsd = usd(event.marketCapSol, solPrice) ?: token.marketCapUsd,
+                    marketCapUsd = currentMarketCapUsd,
                     liquidityUsd = usd(event.vSolInBondingCurve, solPrice) ?: token.liquidityUsd
                 )
             )
+            recordMarketCap(event.mint, event.timestampEpochMs, currentMarketCapUsd)
         }
 
         analyzeAndMaybeSignal(event.mint, event.timestampEpochMs)
@@ -493,6 +497,16 @@ class ScannerOrchestrator(
         }
     }
 
+    private fun recordMarketCap(mint: String, timestampMs: Long, marketCapUsd: Double?) {
+        if (marketCapUsd == null || marketCapUsd <= 0.0) return
+        val history = marketCapHistoryByMint.getOrPut(mint) { mutableListOf() }
+        synchronized(history) {
+            history += timestampMs to marketCapUsd
+            val cutoff = timestampMs - 15 * 60_000L
+            history.removeAll { it.first < cutoff }
+        }
+    }
+
     private fun calculateDataQuality(info: DexScreenerPairInfo): Pair<Int, String> {
         val available = listOf(
             info.priceUsd, info.marketCapUsd, info.fdvUsd, info.liquidityUsd,
@@ -559,6 +573,7 @@ class ScannerOrchestrator(
             liquidityUsd = token.liquidityUsd,
             nowMs = nowMs,
             latestTradeAtMs = lastActivityByMint[mint],
+            marketCapHistory = marketCapHistoryByMint[mint].orEmpty(),
             config = settings.engineConfig.value
         )
         db.featureSnapshotDao().insertObservation(
@@ -636,7 +651,9 @@ class ScannerOrchestrator(
                 opportunityScore = evidence.momentumScore,
                 qualityScore = evidence.signalQuality,
                 dataConfidenceScore = evidence.dataConfidence,
-                evidenceJson = org.json.JSONObject(mapOf("classification" to evidence.classification, "reasons" to JSONArray(evidence.reasons), "warnings" to JSONArray(evidence.warnings))).toString()
+                evidenceJson = org.json.JSONObject(mapOf("classification" to evidence.classification, "reasons" to JSONArray(evidence.reasons), "warnings" to JSONArray(evidence.warnings))).toString(),
+                marketCapVelocityPct = evidence.marketCapVelocityPct,
+                marketCapAccelerationPct = evidence.marketCapAccelerationPct
             )
         db.tokenDao().upsert(analyzedToken)
 

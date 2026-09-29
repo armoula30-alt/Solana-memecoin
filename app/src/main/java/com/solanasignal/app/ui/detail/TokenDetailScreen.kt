@@ -114,6 +114,8 @@ fun TokenDetailScreen(vm: AppViewModel, mint: String) {
                         Row("Opportunity", t.opportunityScore?.let { "$it/100" } ?: "UNKNOWN")
                         Row("Signal quality", t.qualityScore?.let { "$it/100" } ?: "UNKNOWN")
                         Row("Data confidence", t.dataConfidenceScore?.let { "$it/100" } ?: "UNKNOWN")
+                        Row("MC velocity / min", t.marketCapVelocityPct?.let { "%+.2f%%".format(it) } ?: "UNKNOWN")
+                        Row("MC acceleration", t.marketCapAccelerationPct?.let { "%+.2f%%".format(it) } ?: "UNKNOWN")
                         JsonListSection("Risk findings", t.manipulationFindingsJson, "⚠")
                         t.evidenceJson?.let { Text("Evidence: $it", style = MaterialTheme.typography.bodySmall) }
                     }

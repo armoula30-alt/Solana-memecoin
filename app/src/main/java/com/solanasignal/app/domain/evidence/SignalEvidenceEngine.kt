@@ -11,6 +11,8 @@ data class SignalEvidence(
     val collapseRisk: Int?,
     val signalQuality: Int?,
     val dataConfidence: Int,
+    val marketCapVelocityPct: Double?,
+    val marketCapAccelerationPct: Double?,
     val classification: String,
     val reasons: List<String>,
     val warnings: List<String>,
@@ -24,6 +26,7 @@ class SignalEvidenceEngine {
         liquidityUsd: Double?,
         nowMs: Long,
         latestTradeAtMs: Long?,
+        marketCapHistory: List<Pair<Long, Double>> = emptyList(),
         config: EngineConfig
     ): SignalEvidence {
         val m10 = windows[10]
@@ -39,6 +42,10 @@ class SignalEvidenceEngine {
         val buyerGrowth = growth(m10?.uniqueBuyers, m60?.uniqueBuyers)
         val priceMomentum = m60?.priceChangePct?.let { boundedPositive(it, 25.0) }
         val liquidityQuality = liquidityScore(marketCapUsd, liquidityUsd, m60)
+        val mcVelocity = marketCapVelocity(marketCapHistory, nowMs, 60_000L)
+        val mcOlderVelocity = marketCapVelocity(marketCapHistory, nowMs - 60_000L, 60_000L)
+        val mcAcceleration = if (mcVelocity != null && mcOlderVelocity != null) mcVelocity - mcOlderVelocity else null
+        val mcMomentum = mcVelocity?.let { velocityScore(it) }
         val antiSpike = m60?.let { largestShare(it) <= config.antiSpikeLargestTradeShare && it.uniqueBuyers >= config.antiSpikeMinimumUniqueBuyers }
 
         val components = listOfNotNull(
@@ -46,7 +53,8 @@ class SignalEvidenceEngine {
             buyAcceleration,
             buyerGrowth,
             priceMomentum,
-            liquidityQuality
+            liquidityQuality,
+            mcMomentum
         )
         val momentum = if (components.size >= 2) weightedAverage(components) else null
 
@@ -70,6 +78,8 @@ class SignalEvidenceEngine {
             if ((buyAcceleration ?: 0.0) >= 60) add("Buy volume is accelerating")
             if ((buyerGrowth ?: 0.0) >= 60) add("Unique buyer growth is increasing")
             if ((priceMomentum ?: 0.0) >= 60) add("Price structure is positive")
+            if ((mcVelocity ?: 0.0) > 5.0) add("Market cap is rising ${"%.1f".format(mcVelocity)}%/min")
+            if ((mcAcceleration ?: 0.0) > 2.0) add("Market-cap growth is accelerating")
             if (liquidityQuality != null && liquidityQuality >= 60) add("Liquidity appears coherent with activity")
         }
         val warnings = buildList {
@@ -86,8 +96,8 @@ class SignalEvidenceEngine {
             momentum >= 40 -> "WATCH"
             else -> "NO SIGNAL"
         }
-        return SignalEvidence(momentum?.toInt(), collapseRisk, quality, confidence, classification, reasons, warnings,
-            mapOf("buyPressure" to pressure, "buyAcceleration" to buyAcceleration, "uniqueBuyerGrowth" to buyerGrowth, "priceMomentum" to priceMomentum, "liquidityQuality" to liquidityQuality))
+        return SignalEvidence(momentum?.toInt(), collapseRisk, quality, confidence, mcVelocity, mcAcceleration, classification, reasons, warnings,
+            mapOf("buyPressure" to pressure, "buyAcceleration" to buyAcceleration, "uniqueBuyerGrowth" to buyerGrowth, "priceMomentum" to priceMomentum, "liquidityQuality" to liquidityQuality, "marketCapVelocityPctPerMinute" to mcVelocity, "marketCapAccelerationPctPerMinute" to mcAcceleration))
     }
 
     private fun buyPressure(m: WindowMetrics): Double = if (m.buys + m.sells == 0) 0.0 else m.buys.toDouble() / (m.buys + m.sells) * 100.0
@@ -102,4 +112,11 @@ class SignalEvidenceEngine {
     }
     private fun largestShare(m: WindowMetrics): Double = if (m.buyVolumeUsd + m.sellVolumeUsd <= 0) 1.0 else max(m.largestBuyUsd, m.largestSellUsd) / (m.buyVolumeUsd + m.sellVolumeUsd)
     private fun weightedAverage(values: List<Double>): Double = values.average().coerceIn(0.0, 100.0)
+    private fun marketCapVelocity(history: List<Pair<Long, Double>>, atMs: Long, lookbackMs: Long): Double? {
+        val current = history.lastOrNull { it.first <= atMs } ?: return null
+        val previous = history.lastOrNull { it.first <= atMs - lookbackMs } ?: return null
+        if (previous.second <= 0.0) return null
+        return ((current.second - previous.second) / previous.second) * 100.0
+    }
+    private fun velocityScore(value: Double): Double = (50.0 + value * 5.0).coerceIn(0.0, 100.0)
 }
