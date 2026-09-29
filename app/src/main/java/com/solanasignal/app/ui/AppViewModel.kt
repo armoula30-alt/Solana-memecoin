@@ -9,6 +9,11 @@ import com.solanasignal.app.data.chart.ChartInterval
 import com.solanasignal.app.data.room.entities.SignalEntity
 import com.solanasignal.app.data.room.entities.SystemEventEntity
 import com.solanasignal.app.data.room.entities.TokenEntity
+import com.solanasignal.app.data.room.entities.PaperPortfolioEntity
+import com.solanasignal.app.data.room.entities.PaperPositionEntity
+import com.solanasignal.app.data.room.entities.PaperTradeEntity
+import com.solanasignal.app.domain.paper.PaperTradeResult
+import com.solanasignal.app.domain.paper.PaperTradingEngine
 import com.solanasignal.app.data.settings.*
 import com.solanasignal.app.di.ServiceLocator
 import kotlinx.coroutines.flow.*
@@ -21,6 +26,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val db = ServiceLocator.database(ctx)
     private val orchestrator = ServiceLocator.orchestrator(ctx)
     private val chartRepository = ChartDataRepository(db)
+    private val paperEngine = PaperTradingEngine(db)
 
     val running = orchestrator.running
     val connectionState = orchestrator.connectionState
@@ -41,8 +47,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val systemEvents: StateFlow<List<SystemEventEntity>> =
         db.systemEventDao().observeRecent().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val paperPortfolio: StateFlow<PaperPortfolioEntity?> =
+        db.paperTradingDao().observePortfolio().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+    val paperPositions: StateFlow<List<PaperPositionEntity>> =
+        db.paperTradingDao().observePositions().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val paperTrades: StateFlow<List<PaperTradeEntity>> =
+        db.paperTradingDao().observeTrades().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     fun startScanner() = orchestrator.start()
     fun stopScanner() = orchestrator.stop()
+
+    suspend fun paperBuy(mint: String, amountUsd: Double): PaperTradeResult {
+        val token = db.tokenDao().getByMint(mint) ?: return PaperTradeResult.Rejected("Token not found")
+        return paperEngine.buy(mint, token.symbol, amountUsd, token.lastPriceUsd ?: 0.0, token.liquidityUsd, token.marketCapUsd)
+    }
+
+    suspend fun paperSell(mint: String, quantity: Double): PaperTradeResult {
+        val token = db.tokenDao().getByMint(mint) ?: return PaperTradeResult.Rejected("Token not found")
+        return paperEngine.sell(mint, token.symbol, quantity, token.lastPriceUsd ?: 0.0, token.liquidityUsd, token.marketCapUsd)
+    }
+
+    suspend fun resetPaperPortfolio() = paperEngine.reset()
 
     fun setApiKey(key: String) = settings.setApiKey(key)
     fun clearApiKey() = settings.clearApiKey()

@@ -29,11 +29,13 @@ import com.solanasignal.app.ui.history.SignalHistoryScreen
 import com.solanasignal.app.ui.scanner.LiveScannerScreen
 import com.solanasignal.app.ui.settings.SettingsScreen
 import com.solanasignal.app.ui.status.SystemStatusScreen
+import com.solanasignal.app.ui.paper.PaperTerminalScreen
 import com.solanasignal.app.ui.theme.SolanaSignalTheme
 
 sealed class Screen(val route: String, val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
     object Dashboard : Screen("dashboard", "Home", Icons.Filled.Home)
     object Scanner : Screen("scanner", "Signals", Icons.Filled.List)
+    object Terminal : Screen("terminal", "Paper Terminal", Icons.Filled.AccountBalanceWallet)
     object History : Screen("history", "History", Icons.Filled.DateRange)
     object Status : Screen("status", "Status", Icons.Filled.Info)
     object Settings : Screen("settings", "Settings", Icons.Filled.Settings)
@@ -121,6 +123,7 @@ fun AppScaffold(vm: AppViewModel, pendingNavigateMint: MutableState<String?> = m
         ) {
             composable(Screen.Dashboard.route) { DashboardScreen(vm) { mint -> navController.navigate("detail/$mint") } }
             composable(Screen.Scanner.route) { LiveScannerScreen(vm) { mint -> navController.navigate("detail/$mint") } }
+            composable(Screen.Terminal.route) { PaperTerminalScreen(vm) }
             composable(Screen.History.route) { SignalHistoryScreen(vm) }
             composable(Screen.Status.route) { SystemStatusScreen(vm) }
             composable(Screen.Settings.route) { SettingsScreen(vm) }
