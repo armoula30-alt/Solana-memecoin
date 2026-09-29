@@ -99,7 +99,8 @@ class SignalEngine {
         score: MomentumScore,
         safety: SafetyReport,
         config: FilterConfig,
-        nowMs: Long
+        nowMs: Long,
+        marketCapVelocityPct: Double? = null
     ): SignalDecision {
         val filters = mutableListOf<FilterResult>()
         val reasons = mutableListOf<String>()
@@ -111,6 +112,16 @@ class SignalEngine {
         val mcOk = marketCapUsd != null && marketCapUsd >= config.minMarketCapUsd
         filters += FilterResult("Market Cap >= \$${config.minMarketCapUsd.toInt()}", mcOk)
         if (mcOk) reasons += "Market cap above minimum"
+
+        // BUY requires an observed, non-decreasing MC trend. Unknown trend is
+        // WATCH-only; a falling MC can never qualify as a fresh BUY candidate.
+        val mcTrendOk = marketCapVelocityPct != null && marketCapVelocityPct >= 0.0
+        filters += FilterResult("MC trend non-decreasing", mcTrendOk)
+        when {
+            marketCapVelocityPct == null -> reasons += "MC trend not established yet: WATCH only"
+            marketCapVelocityPct < 0.0 -> reasons += "Rejected for BUY: market cap is falling"
+            else -> reasons += "Market cap is non-decreasing"
+        }
 
         val buyersOk = !config.requireBuyersGtSellers || metrics5m.uniqueBuyers > metrics5m.uniqueSellers
         filters += FilterResult("Buyers > Sellers", buyersOk)
@@ -130,9 +141,10 @@ class SignalEngine {
         val scoreOk = score.total >= config.minScoreForBuy
         filters += FilterResult("Score >= ${config.minScoreForBuy}", scoreOk)
 
-        val allHardFiltersPass = ageOk && mcOk && buyersOk && volOk && safetyOk
+        val allHardFiltersPass = ageOk && mcOk && mcTrendOk && buyersOk && volOk && safetyOk
 
         val rawType = when {
+            marketCapVelocityPct != null && marketCapVelocityPct < 0.0 -> SignalType.REJECTED
             allHardFiltersPass && scoreOk -> SignalType.BUY
             score.total >= config.watchScoreFloor -> SignalType.WATCH
             else -> SignalType.REJECTED

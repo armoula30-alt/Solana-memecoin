@@ -678,7 +678,8 @@ class ScannerOrchestrator(
 
         val buyDecision = signalEngine.evaluate(
             mint = mint, ageSeconds = ageSeconds, marketCapUsd = token.marketCapUsd,
-            metrics5m = m5, score = score, safety = safety, config = config, nowMs = nowMs
+            metrics5m = m5, score = score, safety = safety, config = config, nowMs = nowMs,
+            marketCapVelocityPct = evidence.marketCapVelocityPct
         )
 
         if (buyDecision.shouldNotify) {
