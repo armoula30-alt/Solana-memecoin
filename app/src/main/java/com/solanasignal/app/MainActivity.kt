@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppScaffold(vm: AppViewModel, pendingNavigateMint: MutableState<String?> = mutableStateOf(null)) {
     val navController = rememberNavController()
-    val items = listOf(Screen.Dashboard, Screen.Scanner, Screen.History, Screen.Status, Screen.Settings)
+    val items = listOf(Screen.Dashboard, Screen.Scanner, Screen.Terminal, Screen.History, Screen.Status, Screen.Settings)
 
     // Fires once per tapped notification: navigate straight to that token's detail
     // screen, then clear the pending value so rotating the screen etc. doesn't repeat it.
