@@ -20,7 +20,7 @@ import com.solanasignal.app.data.room.entities.*
         TokenFeatureSnapshotEntity::class,
         SystemEventEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
