@@ -70,7 +70,7 @@ class SignalEvidenceEngine {
         val freshness = latestTradeAtMs?.let { ((nowMs - it).coerceAtLeast(0) / 1000).let { age -> (100 - age * 100 / config.dataFreshnessSeconds).coerceIn(0, 100) } }
         val completeness = (components.size * 100 / 5).coerceIn(0, 100)
         val observations = (availableWindows * 100 / 5).coerceIn(0, 100)
-        val confidence = listOfNotNull(freshness, completeness, observations).average().toInt().coerceIn(0, 100)
+        val confidence = listOfNotNull(freshness?.toDouble(), completeness.toDouble(), observations.toDouble()).average().toInt().coerceIn(0, 100)
         val quality = momentum?.let { ((it * 0.55) + (confidence * 0.30) + ((100 - (collapseRisk ?: 50)) * 0.15)).toInt().coerceIn(0, 100) }
 
         val reasons = buildList {
