@@ -77,7 +77,7 @@ class McTrendPressureEngine(
         val warnings = buildList {
             if (primary == null || primary.validIntervals < minimumIntervals) add("Insufficient MC observations")
             if (primary?.drawdownFromHighPct ?: 0.0 > 20.0) add("MC drawdown from recent high is elevated")
-            if (primary?.consecutiveNegative ?: 0 > primary.consecutivePositive) add("Negative MC intervals currently dominate")
+            if (primary?.let { it.consecutiveNegative > it.consecutivePositive } == true) add("Negative MC intervals currently dominate")
         }
         return McTrendPressureResult(calculated, primary, score, confidence, explanation, warnings)
     }
