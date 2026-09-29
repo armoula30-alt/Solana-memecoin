@@ -50,10 +50,12 @@ class SignalEngine {
         score: MomentumScore,
         safety: SafetyReport,
         config: FilterConfig,
-        nowMs: Long
+        nowMs: Long,
+        marketCapVelocityPct: Double? = null
     ): SignalDecision {
         val ageOk = ageSeconds != null && ageSeconds <= config.maxTokenAgeSeconds
         val mcOk = marketCapUsd != null && marketCapUsd >= config.minMarketCapUsd
+        val mcTrendOk = marketCapVelocityPct != null && marketCapVelocityPct >= 0.0
         val buyersOk = !config.requireBuyersGtSellers ||
             (buys5m != null && sells5m != null && buys5m > sells5m)
         // DexScreener exposes aggregate volume and buy/sell counts, not buy/sell
@@ -67,6 +69,9 @@ class SignalEngine {
             else add("Rejected: token age exceeds ${config.maxTokenAgeSeconds}s or age is unavailable")
             if (mcOk) add("Market cap above minimum")
             else add("Rejected: market cap is below \$${config.minMarketCapUsd.toInt()} or unavailable")
+            if (marketCapVelocityPct == null) add("MC trend not established yet: WATCH only")
+            else if (marketCapVelocityPct < 0.0) add("Rejected for BUY: market cap is falling")
+            else add("Market cap is non-decreasing")
             if (buyersOk) add("DexScreener 5m buys > sells")
             else add("Rejected: 5m buys are not greater than sells")
             if (buyVolume5mUsd != null && sellVolume5mUsd != null && buyVolume5mUsd > sellVolume5mUsd) {
@@ -81,7 +86,8 @@ class SignalEngine {
             if (!scoreOk) add("Watch only: score ${score.total} is below BUY threshold ${config.minScoreForBuy}")
         }
         val rawType = when {
-            ageOk && mcOk && buyersOk && volOk && safetyOk && scoreOk -> SignalType.BUY
+            marketCapVelocityPct != null && marketCapVelocityPct < 0.0 -> SignalType.REJECTED
+            ageOk && mcOk && mcTrendOk && buyersOk && volOk && safetyOk && scoreOk -> SignalType.BUY
             score.total >= config.watchScoreFloor -> SignalType.WATCH
             else -> SignalType.REJECTED
         }

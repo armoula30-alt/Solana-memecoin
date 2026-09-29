@@ -369,6 +369,8 @@ class ScannerOrchestrator(
         // The filter must use the fresh DexScreener snapshot, not the older
         // PumpPortal/SOL estimate stored on the token.
         val effectiveMarketCapUsd = info.marketCapUsd ?: token.marketCapUsd
+        recordMarketCap(token.mint, nowMs, effectiveMarketCapUsd)
+        val marketCapVelocity = marketCapVelocity(token.mint, nowMs)
         val safety = safetyEngine.evaluate(
             mint = token.mint,
             creatorSellVolumeUsdRecent = null,
@@ -417,7 +419,8 @@ class ScannerOrchestrator(
             score = score,
             safety = safety,
             config = settings.filterConfig.value,
-            nowMs = nowMs
+            nowMs = nowMs,
+            marketCapVelocityPct = marketCapVelocity
         )
         // AI is advisory and runs off the real-time path. Deterministic signals
         // must not wait for a provider response or fail when AI is unavailable.
@@ -505,6 +508,14 @@ class ScannerOrchestrator(
             val cutoff = timestampMs - 15 * 60_000L
             history.removeAll { it.first < cutoff }
         }
+    }
+
+    private fun marketCapVelocity(mint: String, atMs: Long): Double? {
+        val history = marketCapHistoryByMint[mint].orEmpty()
+        val current = history.lastOrNull { it.first <= atMs } ?: return null
+        val previous = history.lastOrNull { it.first <= atMs - 60_000L } ?: return null
+        if (previous.second <= 0.0) return null
+        return (current.second - previous.second) / previous.second * 100.0
     }
 
     private fun calculateDataQuality(info: DexScreenerPairInfo): Pair<Int, String> {
