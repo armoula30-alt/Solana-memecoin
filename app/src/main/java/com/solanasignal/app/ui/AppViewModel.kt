@@ -43,7 +43,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val reconnectCount = orchestrator.reconnectCount
     val parserErrorCount = orchestrator.parserErrorCount
     val eventsPerSecond = orchestrator.eventsPerSecond
-    val trackedSubscriptionCount = orchestrator.trackedSubscriptionCount
+    val candidateCount = orchestrator.candidateCount
+    val activeFeedSubscriptions = orchestrator.activeFeedSubscriptions
+    val feedProvider = orchestrator.feedProvider
+    val tradeProvider = orchestrator.tradeProvider
+    val pumpDevTradeEvents = orchestrator.pumpDevTradeEvents
+    val normalizedTradeCount = orchestrator.normalizedTradeCount
+    val discoveryTokens = orchestrator.discoveryTokens
+    val deduplicatedTrades = orchestrator.deduplicatedTrades
+    val metricsUpdates = orchestrator.metricsUpdates
+    val signalEvaluations = orchestrator.signalEvaluations
     val dexScreenerEnrichedCount = orchestrator.dexScreenerEnrichedCount
     val tradesReceivedCount = orchestrator.tradesReceivedCount
 

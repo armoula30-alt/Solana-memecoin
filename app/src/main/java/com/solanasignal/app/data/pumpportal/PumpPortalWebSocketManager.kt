@@ -22,7 +22,8 @@ import kotlin.math.pow
  * discovery, reconnection with exponential backoff, discovery restore, and
  * staleness/latency monitoring.
  *
- * The only wire message used here is the official subscribeNewToken method.
+ * Uses the official discovery subscription method on this single persistent
+ * connection.
  */
 class PumpPortalWebSocketManager(
     private val getApiKey: () -> String?,
@@ -62,7 +63,11 @@ class PumpPortalWebSocketManager(
     private val _parserErrorCount = MutableStateFlow(0)
     val parserErrorCount: StateFlow<Int> = _parserErrorCount.asStateFlow()
 
-    // Only the free new-token discovery stream is used by this app.
+    // This count covers only the discovery feed; token trades are not subscribed
+    // from this wallet-linked provider in the read-only app.
+    private val _activeFeedSubscriptions = MutableStateFlow(0)
+    val activeFeedSubscriptions: StateFlow<Int> = _activeFeedSubscriptions.asStateFlow()
+
     private var subscribedNewToken = false
 
     private val outboundQueue = Channel<JSONObject>(capacity = Channel.UNLIMITED)
@@ -92,12 +97,17 @@ class PumpPortalWebSocketManager(
         webSocket?.close(1000, "user stopped scanner")
         webSocket = null
         _connectionState.value = ConnectionState.DISCONNECTED
+        _activeFeedSubscriptions.value = 0
     }
 
     fun subscribeNewToken() {
         subscribedNewToken = true
         enqueue(JSONObject().put("method", "subscribeNewToken"))
+        if (_connectionState.value == ConnectionState.CONNECTED) {
+            _activeFeedSubscriptions.value = 1
+        }
     }
+
 
     private fun enqueue(msg: JSONObject) {
         outboundQueue.trySend(msg)
@@ -168,6 +178,7 @@ class PumpPortalWebSocketManager(
                     return
                 }
                 _connectionState.value = ConnectionState.CONNECTED
+                _activeFeedSubscriptions.value = if (subscribedNewToken) 1 else 0
                 reconnectAttempt = 0
                 reconnectJob = null
                 onSystemEvent("CONNECTION", "WebSocket connected")

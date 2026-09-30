@@ -41,7 +41,12 @@ data class NormalizedTradeEvent(
     val vSolInBondingCurve: Double?,
     val vTokensInBondingCurve: Double?,
     val marketCapSol: Double?,
-    val timestampEpochMs: Long
+    val timestampEpochMs: Long,
+    val quoteAmount: Double? = null,
+    val marketCapQuote: Double? = null,
+    val source: String? = null,
+    val pool: String? = null,
+    val quoteMint: String? = null
 ) {
     /** price in SOL per token, derived from bonding-curve reserves; null if reserves not reported. */
     val priceSol: Double?

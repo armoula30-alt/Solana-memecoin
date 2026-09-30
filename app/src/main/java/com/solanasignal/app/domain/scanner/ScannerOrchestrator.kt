@@ -5,6 +5,8 @@ import com.solanasignal.app.data.codecraft.CodeCraftClient
 import com.solanasignal.app.data.dexscreener.DexScreenerClient
 import com.solanasignal.app.data.dexscreener.DexScreenerPairInfo
 import com.solanasignal.app.data.pumpportal.*
+import com.solanasignal.app.data.pumpdev.PumpDevParser
+import com.solanasignal.app.data.pumpdev.PumpDevWebSocketManager
 import com.solanasignal.app.data.room.AppDatabase
 import com.solanasignal.app.data.room.entities.*
 import com.solanasignal.app.data.settings.BatteryMode
@@ -60,6 +62,7 @@ class ScannerOrchestrator(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var mockSource: MockEventSource? = null
     private var webSocketManager: PumpPortalWebSocketManager? = null
+    private var pumpDevManager: PumpDevWebSocketManager? = null
     private var dexScreenerJob: Job? = null
 
     private val lastScoreByMint = ConcurrentHashMap<String, Int>()
@@ -93,8 +96,39 @@ class ScannerOrchestrator(
     private val _eventsPerSecond = MutableStateFlow(0)
     val eventsPerSecond: StateFlow<Int> = _eventsPerSecond.asStateFlow()
 
-    private val _trackedSubscriptionCount = MutableStateFlow(0)
-    val trackedSubscriptionCount: StateFlow<Int> = _trackedSubscriptionCount.asStateFlow()
+    // Candidate count: mints currently tracked for scanner/DexScreener work.
+    // This is deliberately separate from live feed subscriptions.
+    private val _candidateCount = MutableStateFlow(0)
+    val candidateCount: StateFlow<Int> = _candidateCount.asStateFlow()
+
+    // Active feed count: subscriptions confirmed by the selected feed manager.
+    private val _activeFeedSubscriptions = MutableStateFlow(0)
+    val activeFeedSubscriptions: StateFlow<Int> = _activeFeedSubscriptions.asStateFlow()
+
+    private val _feedProvider = MutableStateFlow("PUMPPORTAL")
+    val feedProvider: StateFlow<String> = _feedProvider.asStateFlow()
+
+    private val _tradeProvider = MutableStateFlow("PUMPDEV")
+    val tradeProvider: StateFlow<String> = _tradeProvider.asStateFlow()
+
+    private val _normalizedTradeCount = MutableStateFlow(0)
+    val normalizedTradeCount: StateFlow<Int> = _normalizedTradeCount.asStateFlow()
+
+    private val _pumpDevTradeEvents = MutableStateFlow(0)
+    val pumpDevTradeEvents: StateFlow<Int> = _pumpDevTradeEvents.asStateFlow()
+
+    private val _discoveryTokens = MutableStateFlow(0)
+    val discoveryTokens: StateFlow<Int> = _discoveryTokens.asStateFlow()
+
+    private val _deduplicatedTrades = MutableStateFlow(0)
+    val deduplicatedTrades: StateFlow<Int> = _deduplicatedTrades.asStateFlow()
+
+    private val _metricsUpdates = MutableStateFlow(0)
+    val metricsUpdates: StateFlow<Int> = _metricsUpdates.asStateFlow()
+
+    private val _signalEvaluations = MutableStateFlow(0)
+    val signalEvaluations: StateFlow<Int> = _signalEvaluations.asStateFlow()
+    private val runtimeCounterLock = Any()
 
     private val _dexScreenerEnrichedCount = MutableStateFlow(0)
     val dexScreenerEnrichedCount: StateFlow<Int> = _dexScreenerEnrichedCount.asStateFlow()
@@ -103,6 +137,10 @@ class ScannerOrchestrator(
     val tradesReceivedCount: StateFlow<Int> = _tradesReceivedCount.asStateFlow()
 
     val solUsdPrice: StateFlow<Double?> get() = solPriceProvider.priceUsd
+
+    private fun incrementRuntimeCounter(counter: MutableStateFlow<Int>) {
+        synchronized(runtimeCounterLock) { counter.value += 1 }
+    }
 
     fun start() {
         if (_running.value) return
@@ -126,10 +164,13 @@ class ScannerOrchestrator(
         mockSource?.stop()
         webSocketManager?.stop()
         webSocketManager = null
+        pumpDevManager?.stop()
+        pumpDevManager = null
         solPriceProvider.stop()
         dexScreenerJob?.cancel()
         evictionJob?.cancel()
         _connectionState.value = ConnectionState.DISCONNECTED
+        _activeFeedSubscriptions.value = 0
     }
 
     /**
@@ -155,8 +196,9 @@ class ScannerOrchestrator(
                     trackedMints.remove(mint)
                     lastActivityByMint.remove(mint)
                     metricsEngine.dropToken(mint)
+                    pumpDevManager?.unsubscribeTokenTrade(mint)
                 }
-                _trackedSubscriptionCount.value = trackedMints.size
+                _candidateCount.value = trackedMints.size
                 logSystemEvent("SUBSCRIPTION", "Evicted ${stale.size} stale token(s) with no trades in 5m, freeing slots")
             }
         }
@@ -233,10 +275,17 @@ class ScannerOrchestrator(
     }
 
     private fun startLive() {
+        _feedProvider.value = "PUMPPORTAL"
+        _tradeProvider.value = "PUMPDEV"
         val manager = PumpPortalWebSocketManager(
             getApiKey = { settings.getApiKeyOrNull() },
-            onEvent = { result, nowMs -> scope.launch { handleParseResult(result, nowMs) } },
-            onSystemEvent = { category, message -> scope.launch { logSystemEvent(category, message) } }
+            onEvent = { result, nowMs -> scope.launch { handleDiscoveryResult(result, nowMs) } },
+            onSystemEvent = { category, message ->
+                scope.launch {
+                    val diagnostic = if (category == "CONNECTION" && message.startsWith("WebSocket connected")) "PUMPPORTAL_CONNECTED" else category
+                    logSystemEvent(diagnostic, message)
+                }
+            }
         )
         webSocketManager = manager
         manager.start()
@@ -251,9 +300,19 @@ class ScannerOrchestrator(
         scope.launch { manager.reconnectCount.collect { _reconnectCount.value = it } }
         scope.launch { manager.parserErrorCount.collect { _parserErrorCount.value = it } }
         scope.launch { manager.eventsPerSecond.collect { _eventsPerSecond.value = it } }
+        val pumpDev = PumpDevWebSocketManager(
+            onMessage = { raw, nowMs -> scope.launch { handlePumpDevMessage(raw, nowMs) } },
+            onSystemEvent = { category, message -> scope.launch { logSystemEvent(category, message) } }
+        )
+        pumpDevManager = pumpDev
+        pumpDev.start()
+        scope.launch { pumpDev.activeSubscriptions.collect { _activeFeedSubscriptions.value = it } }
+        scope.launch { pumpDev.tradesReceived.collect { _pumpDevTradeEvents.value = it } }
     }
 
     private fun startMock() {
+        _feedProvider.value = "MOCK"
+        _tradeProvider.value = "MOCK"
         // Mock mode fabricates a fake SOL price too, so USD figures aren't stuck on
         // UNKNOWN while demoing - clearly labeled MOCK MODE in the UI regardless.
         solPriceProvider.stop()
@@ -270,11 +329,15 @@ class ScannerOrchestrator(
 
     private fun currentSolUsdPrice(): Double? = if (settings.mockMode.value) 180.0 else solPriceProvider.priceUsd.value
 
-    private suspend fun handleParseResult(result: ParseResult, nowMs: Long) {
+    private suspend fun handleDiscoveryResult(result: ParseResult, nowMs: Long) {
         when (result) {
-            is ParseResult.TokenCreated -> handleTokenCreated(result.event)
+            is ParseResult.TokenCreated -> {
+                logSystemEvent("PUMPPORTAL_NEW_TOKEN_RECEIVED", "PumpPortal discovered ${result.event.mint}")
+                handleTokenCreated(result.event)
+            }
             is ParseResult.Migration -> handleMigration(result.event)
-            is ParseResult.Trade -> handleTrade(result.event)
+            // PumpPortal is discovery-only in the read-only architecture.
+            is ParseResult.Trade -> Unit
             is ParseResult.Unknown -> logSystemEvent(
                 "PARSER_UNKNOWN",
                 "Unrecognized message (likely a subscription ack or an error from PumpPortal - check content): " +
@@ -282,6 +345,14 @@ class ScannerOrchestrator(
             )
             is ParseResult.Malformed -> Unit // already counted/logged by the WS manager
         }
+    }
+
+    private suspend fun handlePumpDevMessage(raw: String, nowMs: Long) {
+        val trade = runCatching { PumpDevParser.parseTrade(raw, nowMs) }.getOrNull() ?: return
+        logSystemEvent("PUMPDEV_TRADE_RECEIVED", "PumpDev ${trade.side.name.lowercase()} trade received for ${trade.mint}")
+        handleTrade(trade)
+        _normalizedTradeCount.value += 1
+        logSystemEvent("PUMPDEV_TRADE_NORMALIZED", "PumpDev trade normalized for ${trade.mint}")
     }
 
     // --- 9. TOKEN DISCOVERY -------------------------------------------------
@@ -308,10 +379,11 @@ class ScannerOrchestrator(
         recordMarketCap(event.mint, event.receivedAtEpochMs, token.marketCapUsd)
 
         val maxTracked = maxTrackedForBatteryMode()
-        if (trackedMints.size < maxTracked) {
-            trackedMints.add(event.mint)
+        if (trackedMints.size < maxTracked && trackedMints.add(event.mint)) {
             lastActivityByMint[event.mint] = event.receivedAtEpochMs
-            _trackedSubscriptionCount.value = trackedMints.size
+            _candidateCount.value = trackedMints.size
+            incrementRuntimeCounter(_discoveryTokens)
+            if (!settings.mockMode.value) pumpDevManager?.subscribeTokenTrade(event.mint)
         }
     }
 
@@ -323,7 +395,10 @@ class ScannerOrchestrator(
     // --- 11. TRADE TRACKING + 12. DUPLICATE PROTECTION ----------------------
     private suspend fun handleTrade(event: NormalizedTradeEvent) {
         val dedupeKey = event.dedupeKey()
-        if (db.tradeDao().existsByDedupeKey(dedupeKey) > 0) return // never process the same trade twice
+        if (db.tradeDao().existsByDedupeKey(dedupeKey) > 0) {
+            incrementRuntimeCounter(_deduplicatedTrades)
+            return // never process the same trade twice
+        }
         _tradesReceivedCount.value += 1
         lastActivityByMint[event.mint] = event.timestampEpochMs
 
@@ -344,7 +419,7 @@ class ScannerOrchestrator(
         )
         // MetricsEngine works in USD internally; feed it the converted amount/price.
         metricsEngine.record(event.mint, event.side, event.trader, amountUsd, priceUsd, event.timestampEpochMs)
-
+        incrementRuntimeCounter(_metricsUpdates)
         db.tokenDao().getByMint(event.mint)?.let { token ->
             val currentMarketCapUsd = usd(event.marketCapSol, solPrice) ?: token.marketCapUsd
             db.tokenDao().upsert(
@@ -716,6 +791,7 @@ class ScannerOrchestrator(
         val config = settings.filterConfig.value
         val ageSeconds = (nowMs - token.firstSeenAtEpochMs) / 1000
 
+        incrementRuntimeCounter(_signalEvaluations)
         val buyDecision = signalEngine.evaluate(
             mint = mint, ageSeconds = ageSeconds, marketCapUsd = token.marketCapUsd,
             metrics5m = m5, score = score, safety = safety, config = config, nowMs = nowMs,

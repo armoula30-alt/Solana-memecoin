@@ -30,7 +30,10 @@ fun DashboardScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
     val signals by vm.signals.collectAsState()
     val mockMode by vm.settings.mockMode.collectAsState()
     val solPrice by vm.solUsdPrice.collectAsState()
-    val trackedCount by vm.trackedSubscriptionCount.collectAsState()
+    val candidateCount by vm.candidateCount.collectAsState()
+    val feedSubscriptions by vm.activeFeedSubscriptions.collectAsState()
+    val feedProvider by vm.feedProvider.collectAsState()
+    val tradeProvider by vm.tradeProvider.collectAsState()
     var signalsToday by remember { mutableStateOf(0) }
 
     LaunchedEffect(signals.size) { signalsToday = vm.signalCountToday() }
@@ -63,7 +66,8 @@ fun DashboardScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("Market feed", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                            Text("PumpPortal  ${connectionLabel(connection)}", color = connectionColor(connection), style = MaterialTheme.typography.bodySmall)
+                            Text("Discovery: $feedProvider  ${connectionLabel(connection)}", color = connectionColor(connection), style = MaterialTheme.typography.bodySmall)
+                            Text("Trades: $tradeProvider", color = TextMuted, style = MaterialTheme.typography.bodySmall)
                         }
                         Switch(checked = running, onCheckedChange = { if (it) vm.startScanner() else vm.stopScanner() })
                     }
@@ -75,8 +79,8 @@ fun DashboardScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
 
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatCard("TRACKED", tokens.size.toString(), Modifier.weight(1f))
-                StatCard("CANDIDATES", trackedCount.toString(), Modifier.weight(1f))
+                StatCard("CANDIDATES", candidateCount.toString(), Modifier.weight(1f))
+                StatCard("FEED SUBS", feedSubscriptions.toString(), Modifier.weight(1f))
                 StatCard("ACTIVE", activeSignals.size.toString(), Modifier.weight(1f))
             }
         }
