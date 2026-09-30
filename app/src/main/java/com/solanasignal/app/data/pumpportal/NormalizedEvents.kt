@@ -49,7 +49,7 @@ data class NormalizedTradeEvent(
             else null
 
     fun dedupeKey(): String =
-        signature ?: "fallback:$mint:${trader ?: "?"}:${solAmount ?: "?"}:${tokenAmount ?: "?}:$timestampEpochMs"
+        signature ?: "fallback:$mint:${trader ?: "?"}:${solAmount ?: "?"}:${tokenAmount ?: "?"}:$timestampEpochMs"
 }
 
 enum class TradeSide { BUY, SELL }
