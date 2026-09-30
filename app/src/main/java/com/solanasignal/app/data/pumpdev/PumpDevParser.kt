@@ -8,6 +8,17 @@ import org.json.JSONObject
 /** Converts PumpDev read-only market events into the existing normalized trade model. */
 object PumpDevParser {
     data class SubscriptionAck(val confirmed: Boolean, val keys: List<String>)
+    data class ControlMessage(
+        val type: String?,
+        val method: String?,
+        val code: String?,
+        val message: String?,
+        val status: String?,
+        val tier: String?,
+        val keys: List<String>,
+        val isSubscriptionAck: Boolean,
+        val isError: Boolean
+    )
 
     fun parseTrade(rawJson: String, nowEpochMs: Long): NormalizedTradeEvent? {
         val obj = JSONObject(rawJson)
@@ -44,14 +55,31 @@ object PumpDevParser {
     }.getOrDefault(false)
 
     fun parseSubscriptionAck(rawJson: String): SubscriptionAck? = runCatching {
-        val obj = JSONObject(rawJson)
-        val type = obj.optString("type", "")
-        val method = obj.optString("method", "")
-        if (method != "subscribeTokenTrade" || (type != "subscribed" && type != "error" && type != "subscription_error")) {
-            return@runCatching null
+        parseControlMessage(rawJson)?.takeIf { it.isSubscriptionAck }?.let {
+            SubscriptionAck(confirmed = !it.isError, keys = it.keys)
         }
-        val keys = obj.optJSONArray("keys")?.toStringList() ?: emptyList()
-        SubscriptionAck(confirmed = type == "subscribed", keys = keys)
+    }.getOrNull()
+
+    fun parseControlMessage(rawJson: String): ControlMessage? = runCatching {
+        val obj = JSONObject(rawJson)
+        val type = obj.optStringOrNull("type")
+        val method = obj.optStringOrNull("method")
+        val code = obj.optStringOrNull("code")
+        if (type == null && method == null && code == null) return@runCatching null
+        val isError = type == "error" || type == "subscription_error" || code != null
+        val isSubscription = method == "subscribeTokenTrade" ||
+            (isError && obj.optJSONArray("keys") != null)
+        ControlMessage(
+            type = type,
+            method = method,
+            code = code,
+            message = obj.optStringOrNull("message"),
+            status = obj.optStringOrNull("status"),
+            tier = obj.optStringOrNull("tier"),
+            keys = obj.optJSONArray("keys")?.toStringList() ?: emptyList(),
+            isSubscriptionAck = isSubscription,
+            isError = isError
+        )
     }.getOrNull()
 
     private fun parseTimestamp(value: Any?, fallbackMs: Long): Long = when (value) {

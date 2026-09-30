@@ -57,4 +57,26 @@ class PumpDevParserTest {
         assertNotNull(ack)
         assertEquals(listOf("MINT"), ack!!.keys)
     }
+
+    @Test
+    fun parsesSubscriptionLimitErrorWithoutMethodField() {
+        val control = PumpDevParser.parseControlMessage(
+            """{"type":"error","code":"SUBSCRIPTION_LIMIT","message":"limit reached","accepted":0,"dropped":1}"""
+        )
+        assertNotNull(control)
+        assertEquals("error", control!!.type)
+        assertEquals("SUBSCRIPTION_LIMIT", control.code)
+        assertEquals("limit reached", control.message)
+        assertEquals(true, control.isError)
+    }
+
+    @Test
+    fun parsesAuthStatusWithoutKeyMaterial() {
+        val control = PumpDevParser.parseControlMessage(
+            """{"type":"auth","status":"ok","tier":"free"}"""
+        )
+        assertNotNull(control)
+        assertEquals("ok", control!!.status)
+        assertEquals("free", control.tier)
+    }
 }

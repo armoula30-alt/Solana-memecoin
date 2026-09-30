@@ -154,12 +154,12 @@ class ScannerOrchestrator(
 
     private val _initialFilterEvaluations = MutableStateFlow(0)
     val initialFilterEvaluations: StateFlow<Int> = _initialFilterEvaluations.asStateFlow()
-    private val _initialFilterPassed = MutableStateFlow(0)
-    val initialFilterPassed: StateFlow<Int> = _initialFilterPassed.asStateFlow()
-    private val _initialFilterRejected = MutableStateFlow(0)
-    val initialFilterRejected: StateFlow<Int> = _initialFilterRejected.asStateFlow()
-    private val _initialFilterUnknown = MutableStateFlow(0)
-    val initialFilterUnknown: StateFlow<Int> = _initialFilterUnknown.asStateFlow()
+    private val _discoveryDecisionPassed = MutableStateFlow(0)
+    val discoveryDecisionPassed: StateFlow<Int> = _discoveryDecisionPassed.asStateFlow()
+    private val _discoveryDecisionRejected = MutableStateFlow(0)
+    val discoveryDecisionRejected: StateFlow<Int> = _discoveryDecisionRejected.asStateFlow()
+    private val _discoveryDecisionUnknown = MutableStateFlow(0)
+    val discoveryDecisionUnknown: StateFlow<Int> = _discoveryDecisionUnknown.asStateFlow()
     private val _discoveryFilterPassed = MutableStateFlow(0)
     val discoveryFilterPassed: StateFlow<Int> = _discoveryFilterPassed.asStateFlow()
     private val _discoveryFilterRejected = MutableStateFlow(0)
@@ -434,7 +434,10 @@ class ScannerOrchestrator(
 
     private suspend fun handlePumpDevMessage(raw: String, nowMs: Long) {
         val trade = runCatching { PumpDevParser.parseTrade(raw, nowMs) }.getOrNull() ?: return
-        logSystemEvent("PUMPDEV_TRADE_RECEIVED", "PumpDev ${trade.side.name.lowercase()} trade received for ${trade.mint}")
+        logSystemEvent(
+            "PUMPDEV_TRADE_RECEIVED",
+            "mint=${trade.mint} side=${trade.side.name} priceSol=${trade.priceSol ?: "UNKNOWN"} solAmount=${trade.solAmount ?: "UNKNOWN"} quoteAmount=${trade.quoteAmount ?: "UNKNOWN"} tokenAmount=${trade.tokenAmount ?: "UNKNOWN"} signature=${trade.signature ?: "UNKNOWN"} timestampEpochMs=${trade.timestampEpochMs}"
+        )
         handleTrade(trade)
         _normalizedTradeCount.value += 1
         logSystemEvent("PUMPDEV_TRADE_NORMALIZED", "PumpDev trade normalized for ${trade.mint}")
@@ -456,9 +459,9 @@ class ScannerOrchestrator(
         val filterDecision = InitialFilterEvaluator.evaluateDiscovery(filterInput, settings.filterConfig.value)
         incrementRuntimeCounter(_initialFilterEvaluations)
         when (filterDecision.status) {
-            InitialFilterStatus.PASS -> incrementRuntimeCounter(_initialFilterPassed)
-            InitialFilterStatus.REJECT -> incrementRuntimeCounter(_initialFilterRejected)
-            InitialFilterStatus.UNKNOWN -> incrementRuntimeCounter(_initialFilterUnknown)
+            InitialFilterStatus.PASS -> incrementRuntimeCounter(_discoveryDecisionPassed)
+            InitialFilterStatus.REJECT -> incrementRuntimeCounter(_discoveryDecisionRejected)
+            InitialFilterStatus.UNKNOWN -> incrementRuntimeCounter(_discoveryDecisionUnknown)
         }
         filterDecision.details.filter { it.stage == InitialFilterStage.DISCOVERY }.forEach { detail ->
             when (detail.status) {

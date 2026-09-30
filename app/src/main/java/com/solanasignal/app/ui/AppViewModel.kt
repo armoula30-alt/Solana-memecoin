@@ -53,9 +53,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val normalizedTradeCount = orchestrator.normalizedTradeCount
     val discoveryTokens = orchestrator.discoveryTokens
     val initialFilterEvaluations = orchestrator.initialFilterEvaluations
-    val initialFilterPassed = orchestrator.initialFilterPassed
-    val initialFilterRejected = orchestrator.initialFilterRejected
-    val initialFilterUnknown = orchestrator.initialFilterUnknown
+    val discoveryDecisionPassed = orchestrator.discoveryDecisionPassed
+    val discoveryDecisionRejected = orchestrator.discoveryDecisionRejected
+    val discoveryDecisionUnknown = orchestrator.discoveryDecisionUnknown
     val discoveryFilterPassed = orchestrator.discoveryFilterPassed
     val discoveryFilterRejected = orchestrator.discoveryFilterRejected
     val discoveryFilterUnknown = orchestrator.discoveryFilterUnknown

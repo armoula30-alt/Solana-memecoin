@@ -90,7 +90,7 @@ class PumpDevWebSocketManager(
     fun subscribeTokenTrade(mint: String) {
         if (!requestedMints.add(mint)) return
         _activeSubscriptions.value = requestedMints.size
-        onSystemEvent("PUMPDEV_SUBSCRIBE_REQUEST", "Requested token-trade subscription for $mint")
+        onSystemEvent("PUMPDEV_SUBSCRIBE_REQUEST", "mint=$mint method=subscribeTokenTrade requestId=NONE")
         enqueue(subscriptionMessage(mint))
     }
 
@@ -143,10 +143,21 @@ class PumpDevWebSocketManager(
 
             override fun onMessage(ws: WebSocket, text: String) {
                 val now = System.currentTimeMillis()
-                val parsed = PumpDevParser.parseSubscriptionAck(text)
-                if (parsed != null) {
-                    if (parsed.confirmed) onSystemEvent("PUMPDEV_SUBSCRIBE_CONFIRMED", "PumpDev confirmed ${parsed.keys.size} token-trade subscription(s)")
-                    else onSystemEvent("PUMPDEV_SUBSCRIBE_FAILURE", "PumpDev subscription acknowledgement was not accepted")
+                val control = PumpDevParser.parseControlMessage(text)
+                val eventType = control?.type ?: if (PumpDevParser.isTrade(text)) "trade" else "unknown"
+                onSystemEvent("PUMPDEV_MESSAGE_RECEIVED", "type=$eventType method=${control?.method ?: "NONE"}")
+                if (control != null) {
+                    if (control.type == "auth") {
+                        onSystemEvent("PUMPDEV_AUTH_STATUS", "status=${control.status ?: "UNKNOWN"} tier=${control.tier ?: "UNKNOWN"} reason=${PumpDevWebSocketUrl.sanitize(control.message ?: "NONE")}")
+                    } else if (control.isSubscriptionAck && !control.isError) {
+                        control.keys.forEach { mint ->
+                            onSystemEvent("PUMPDEV_SUBSCRIBE_CONFIRMED", "mint=$mint responseType=${control.type ?: "UNKNOWN"} method=${control.method ?: "subscribeTokenTrade"}")
+                        }
+                    } else if (control.isError) {
+                        val code = control.code ?: "UNKNOWN"
+                        val message = PumpDevWebSocketUrl.sanitize(control.message ?: "PumpDev control error")
+                        onSystemEvent("PUMPDEV_SUBSCRIBE_FAILURE", "mint=${control.keys.joinToString(",")} code=$code message=$message")
+                    }
                     return
                 }
                 if (PumpDevParser.isTrade(text)) _tradesReceived.value += 1
