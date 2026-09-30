@@ -89,6 +89,7 @@ class LiveMarketStateRepositoryTest {
         assertEquals(MarketDataStatus.DISCONNECTED, repository.states.value.getValue("mint-a").status)
         repository.setConnectionState(ConnectionState.CONNECTED, nowMs = 3_000L)
         assertEquals(MarketDataStatus.STALE, repository.states.value.getValue("mint-a").status)
+        repository.beginTradeTracking(listOf("mint-a"), nowMs = 3_000L)
         repository.updateTrade(
             "mint-a", "A", "Alpha", 1.1, 110_000.0, 10_000.0,
             LiveTradeTick(3_010L, TradeSide.BUY, 1.1, 5.0, null, "sig-2"), nowMs = 3_010L
