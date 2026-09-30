@@ -19,7 +19,8 @@ class PaperTradingEngine(
     private val feeRate: Double = 0.003,
     private val maxSlippageRate: Double = 0.15
 ) {
-    suspend fun buy(mint: String, symbol: String?, amountUsd: Double, marketPriceUsd: Double, liquidityUsd: Double?, marketCapUsd: Double?, reason: String = "Manual simulated entry", now: Long = System.currentTimeMillis()): PaperTradeResult {
+    suspend fun buy(mint: String, symbol: String?, amountUsd: Double, marketPriceUsd: Double, liquidityUsd: Double?, marketCapUsd: Double?, reason: String = "Manual simulated entry", marketDataSource: String = "UNKNOWN", now: Long = System.currentTimeMillis(), signalTimestampMs: Long? = null): PaperTradeResult {
+        if (marketDataSource !in setOf("PUMPPORTAL_TRADE", "PUMPDEV_TRADE")) return PaperTradeResult.Rejected("Paper fills require a confirmed live trade quote from the selected provider")
         if (amountUsd <= 0.0 || marketPriceUsd <= 0.0) return PaperTradeResult.Rejected("Amount and market price must be positive")
         return db.withTransaction {
             val portfolio = db.paperTradingDao().portfolio() ?: PaperPortfolioEntity(updatedAt = now).also { db.paperTradingDao().savePortfolio(it) }
@@ -34,12 +35,13 @@ class PaperTradingEngine(
             val average = invested / totalQuantity
             db.paperTradingDao().savePosition(PaperPositionEntity(mint, symbol, totalQuantity, average, old?.entryMarketCapUsd ?: marketCapUsd, fill, marketCapUsd, invested, old?.realizedPnlUsd ?: 0.0, old?.openedAt ?: now, now))
             db.paperTradingDao().savePortfolio(portfolio.copy(cashUsd = portfolio.cashUsd - amountUsd, updatedAt = now))
-            val id = db.paperTradingDao().insertTrade(PaperTradeEntity(mint = mint, symbol = symbol, side = "PAPER_BUY", timestamp = now, requestedUsd = amountUsd, quantity = quantity, marketPriceUsd = marketPriceUsd, fillPriceUsd = fill, feeUsd = fee, slippageUsd = (fill - marketPriceUsd) * quantity, reason = reason))
+            val id = db.paperTradingDao().insertTrade(PaperTradeEntity(mint = mint, symbol = symbol, side = "PAPER_BUY", timestamp = now, requestedUsd = amountUsd, quantity = quantity, marketPriceUsd = marketPriceUsd, fillPriceUsd = fill, feeUsd = fee, slippageUsd = (fill - marketPriceUsd) * quantity, reason = reason, marketDataSource = marketDataSource, simulated = true, signalTimestampMs = signalTimestampMs))
             PaperTradeResult.Success(id, fill, quantity, fee)
         }
     }
 
-    suspend fun sell(mint: String, symbol: String?, quantity: Double, marketPriceUsd: Double, liquidityUsd: Double?, marketCapUsd: Double?, reason: String = "Manual simulated exit", now: Long = System.currentTimeMillis()): PaperTradeResult {
+    suspend fun sell(mint: String, symbol: String?, quantity: Double, marketPriceUsd: Double, liquidityUsd: Double?, marketCapUsd: Double?, reason: String = "Manual simulated exit", marketDataSource: String = "UNKNOWN", now: Long = System.currentTimeMillis(), signalTimestampMs: Long? = null): PaperTradeResult {
+        if (marketDataSource !in setOf("PUMPPORTAL_TRADE", "PUMPDEV_TRADE")) return PaperTradeResult.Rejected("Paper fills require a confirmed live trade quote from the selected provider")
         if (quantity <= 0.0 || marketPriceUsd <= 0.0) return PaperTradeResult.Rejected("Quantity and market price must be positive")
         return db.withTransaction {
             val position = db.paperTradingDao().position(mint) ?: return@withTransaction PaperTradeResult.Rejected("No virtual position")
@@ -56,7 +58,7 @@ class PaperTradingEngine(
             if (remaining <= 1e-12) db.paperTradingDao().deletePosition(mint)
             else db.paperTradingDao().savePosition(position.copy(quantity = remaining, investedUsd = position.averageEntryPriceUsd * remaining, currentPriceUsd = fill, currentMarketCapUsd = marketCapUsd, realizedPnlUsd = position.realizedPnlUsd + pnl, updatedAt = now))
             db.paperTradingDao().savePortfolio(portfolio.copy(cashUsd = portfolio.cashUsd + proceeds - fee, realizedPnlUsd = portfolio.realizedPnlUsd + pnl, updatedAt = now))
-            val id = db.paperTradingDao().insertTrade(PaperTradeEntity(mint = mint, symbol = symbol, side = "PAPER_SELL", timestamp = now, requestedUsd = proceedsGross, quantity = quantity, marketPriceUsd = marketPriceUsd, fillPriceUsd = fill, feeUsd = fee, slippageUsd = (marketPriceUsd - fill) * quantity, realizedPnlUsd = pnl, reason = reason))
+            val id = db.paperTradingDao().insertTrade(PaperTradeEntity(mint = mint, symbol = symbol, side = "PAPER_SELL", timestamp = now, requestedUsd = proceedsGross, quantity = quantity, marketPriceUsd = marketPriceUsd, fillPriceUsd = fill, feeUsd = fee, slippageUsd = (marketPriceUsd - fill) * quantity, realizedPnlUsd = pnl, reason = reason, marketDataSource = marketDataSource, simulated = true, signalTimestampMs = signalTimestampMs, holdingDurationMs = (now - position.openedAt).coerceAtLeast(0L)))
             PaperTradeResult.Success(id, fill, quantity, fee)
         }
     }

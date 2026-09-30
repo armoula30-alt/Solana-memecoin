@@ -11,14 +11,18 @@ import androidx.compose.ui.unit.dp
 import com.solanasignal.app.data.settings.BatteryMode
 import com.solanasignal.app.data.settings.FilterConfig
 import com.solanasignal.app.data.settings.RetentionPolicy
+import com.solanasignal.app.data.telemetry.MarketFeedProvider
 import com.solanasignal.app.ui.AppViewModel
 
 @Composable
-fun SettingsScreen(vm: AppViewModel) {
+fun SettingsScreen(vm: AppViewModel, onOpenDiagnostics: () -> Unit = {}) {
     val apiKeyConfigured by vm.settings.apiKeyConfigured.collectAsState()
     val codeCraftConfigured by vm.settings.codeCraftConfigured.collectAsState()
     val codeCraftModel by vm.settings.codeCraftModel.collectAsState()
     val mockMode by vm.settings.mockMode.collectAsState()
+    val liveTradeStreaming by vm.settings.liveTradeStreamingEnabled.collectAsState()
+    val provider by vm.settings.marketFeedProvider.collectAsState()
+    val traceEnabled by vm.settings.traceLoggingEnabled.collectAsState()
     val batteryMode by vm.settings.batteryMode.collectAsState()
     val filters by vm.settings.filterConfig.collectAsState()
     val retention by vm.settings.retentionPolicy.collectAsState()
@@ -30,6 +34,26 @@ fun SettingsScreen(vm: AppViewModel) {
         item { Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
 
         item {
+            SettingsCard("Live market provider") {
+                MarketFeedProvider.values().forEach { option ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text(option.displayName, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (option == MarketFeedProvider.PUMPDEV)
+                                    "Anonymous tier: 5 live token subscriptions / 10,000 trade messages per month; new launches are unmetered."
+                                else "Discovery is free; token-trade subscriptions have separate published metering.",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                        RadioButton(selected = provider == option, onClick = { vm.setMarketFeedProvider(option) })
+                    }
+                }
+                Text("Only one provider is connected at a time. Switching provider clears live-stream consent and requires you to opt in again.", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+
+        item {
             SettingsCard("PumpPortal API Key") {
                 Text(
                     if (apiKeyConfigured) "Status: CONFIGURED (stored encrypted on-device)" else "Status: NOT SET",
@@ -37,9 +61,28 @@ fun SettingsScreen(vm: AppViewModel) {
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "PumpPortal is used only to discover new mints. The app then polls DexScreener for market data and analyzes it; PumpPortal trade subscriptions are not used.",
+                    "PumpPortal discovery is free. Live token-trade streaming is a separate, metered feature and is OFF by default.",
                     style = MaterialTheme.typography.bodySmall
                 )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Official rate: 0.01 SOL per 10,000 received trade events. Requires an API key linked to a wallet funded with at least 0.02 SOL. Fees depend on actual event volume; the app does not estimate or pay a fixed amount.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(if (provider == MarketFeedProvider.PUMPPORTAL) "Enable PumpPortal metered trade stream" else "Enable PumpDev live trade stream", fontWeight = FontWeight.Medium)
+                        Text("Subscribes only to actively tracked tokens while scanning. Provider quotas apply.", style = MaterialTheme.typography.labelSmall)
+                    }
+                    Switch(
+                        checked = liveTradeStreaming,
+                        enabled = !mockMode && (!provider.requiresApiKey || apiKeyConfigured),
+                        onCheckedChange = vm::setLiveTradeStreamingEnabled
+                    )
+                }
+                if (provider == MarketFeedProvider.PUMPPORTAL && !apiKeyConfigured) Text("Set a PumpPortal API key before enabling live trades.", style = MaterialTheme.typography.labelSmall)
+                if (provider == MarketFeedProvider.PUMPDEV) Text("PumpDev uses its anonymous connection here; no API key is sent to PumpDev.", style = MaterialTheme.typography.labelSmall)
                 Spacer(Modifier.height(8.dp))
                 if (showKeyField) {
                     OutlinedTextField(
@@ -169,6 +212,17 @@ fun SettingsScreen(vm: AppViewModel) {
                         RadioButton(selected = retention == policy, onClick = { vm.setRetention(policy) })
                     }
                 }
+            }
+        }
+
+        item {
+            SettingsCard("Developer diagnostics") {
+                Text("Structured diagnostics are stored on-device for up to 7 days (25,000 events maximum). TRACE may retain redacted provider frames and is off by default.", style = MaterialTheme.typography.bodySmall)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Enable TRACE frames")
+                    Switch(checked = traceEnabled, onCheckedChange = vm::setTraceLoggingEnabled)
+                }
+                OutlinedButton(onClick = onOpenDiagnostics) { Text("Open Diagnostics") }
             }
         }
 

@@ -18,7 +18,7 @@ interface TokenDao {
     @Query("SELECT * FROM tokens WHERE lifecycle = :lifecycle")
     suspend fun getByLifecycle(lifecycle: String): List<TokenEntity>
 
-    @Query("DELETE FROM tokens WHERE firstSeenAtEpochMs < :cutoff")
+    @Query("DELETE FROM tokens WHERE firstSeenAtEpochMs < :cutoff AND mint NOT IN (SELECT mint FROM paper_positions)")
     suspend fun deleteOlderThan(cutoff: Long)
 }
 
@@ -75,6 +75,9 @@ interface SignalDao {
     @Query("SELECT * FROM signals WHERE mint = :mint ORDER BY timestamp DESC LIMIT 1")
     suspend fun latestForMint(mint: String): SignalEntity?
 
+    @Query("SELECT * FROM signals WHERE mint = :mint AND timestamp >= :cutoff ORDER BY timestamp ASC")
+    suspend fun forMintSince(mint: String, cutoff: Long): List<SignalEntity>
+
     @Query("SELECT * FROM signals WHERE timestamp >= :cutoff ORDER BY timestamp ASC")
     suspend fun since(cutoff: Long): List<SignalEntity>
 
@@ -96,7 +99,7 @@ interface SignalDao {
 
 @Dao
 interface SignalOutcomeDao {
-    @Insert
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(outcome: SignalOutcomeEntity): Long
 
     @Query("SELECT * FROM signal_outcomes WHERE signalId = :signalId ORDER BY checkTimestamp ASC")

@@ -25,6 +25,7 @@ sealed class ParseResult {
     data class Trade(val event: NormalizedTradeEvent) : ParseResult()
     data class Unknown(val rawType: String?, val raw: String) : ParseResult()
     data class Malformed(val raw: String, val error: String) : ParseResult()
+    data class Control(val controlType: String, val raw: String) : ParseResult()
 }
 
 object PumpPortalEventParser {
@@ -32,21 +33,31 @@ object PumpPortalEventParser {
     fun parse(rawJson: String, nowEpochMs: Long): ParseResult {
         return try {
             val obj = JSONObject(rawJson)
-            when (classify(obj)) {
+            val kind = classify(obj)
+            if (kind in setOf(EventKind.NEW_TOKEN, EventKind.MIGRATION, EventKind.TRADE) && obj.optStringOrNull("mint") == null) {
+                ParseResult.Malformed(rawJson, "missing mint")
+            } else when (val result = when (kind) {
                 EventKind.NEW_TOKEN -> ParseResult.TokenCreated(parseTokenCreated(obj, nowEpochMs))
                 EventKind.MIGRATION -> ParseResult.Migration(parseMigration(obj, nowEpochMs))
                 EventKind.TRADE -> ParseResult.Trade(parseTrade(obj, nowEpochMs))
+                EventKind.CONTROL -> ParseResult.Control(obj.optString("type", "control"), rawJson)
                 EventKind.UNKNOWN -> ParseResult.Unknown(obj.optString("txType", null), rawJson)
+            }) {
+                is ParseResult.TokenCreated -> result.copy(event = result.event.copy(rawFrame = rawJson))
+                is ParseResult.Migration -> result.copy(event = result.event.copy(rawFrame = rawJson))
+                is ParseResult.Trade -> result.copy(event = result.event.copy(rawFrame = rawJson))
+                else -> result
             }
         } catch (e: Exception) {
             ParseResult.Malformed(rawJson, e.message ?: "unknown parse error")
         }
     }
 
-    private enum class EventKind { NEW_TOKEN, MIGRATION, TRADE, UNKNOWN }
+    private enum class EventKind { NEW_TOKEN, MIGRATION, TRADE, CONTROL, UNKNOWN }
 
     private fun classify(obj: JSONObject): EventKind {
         val txType = obj.optString("txType", "").lowercase()
+        if (txType.isBlank() && obj.optString("type").isNotBlank()) return EventKind.CONTROL
         return when (txType) {
             "create" -> EventKind.NEW_TOKEN
             "migrate" -> EventKind.MIGRATION
@@ -62,12 +73,14 @@ object PumpPortalEventParser {
             symbol = obj.optStringOrNull("symbol"),
             creator = obj.optStringOrNull("traderPublicKey"),
             uri = obj.optStringOrNull("uri"),
-            createdAtEpochMs = null, // not reported as epoch ms - use receivedAtEpochMs as the discovery clock
+            createdAtEpochMs = null,
             marketCapSol = obj.optDoubleOrNull("marketCapSol"),
             vSolInBondingCurve = obj.optDoubleOrNull("vSolInBondingCurve"),
             vTokensInBondingCurve = obj.optDoubleOrNull("vTokensInBondingCurve"),
             bondingCurveKey = obj.optStringOrNull("bondingCurveKey"),
-            receivedAtEpochMs = now
+            receivedAtEpochMs = now,
+            sourceTimestampEpochMs = obj.sourceTimestampEpochMs(),
+            rawFrame = obj.toString()
         )
     }
 
@@ -77,7 +90,9 @@ object PumpPortalEventParser {
         return NormalizedMigrationEvent(
             mint = obj.optStringOrNull("mint") ?: "UNKNOWN_MINT_${now}",
             migratedAtEpochMs = now,
-            raw = map
+            raw = map,
+            sourceTimestampEpochMs = obj.sourceTimestampEpochMs(),
+            rawFrame = obj.toString()
         )
     }
 
@@ -94,7 +109,10 @@ object PumpPortalEventParser {
             vSolInBondingCurve = obj.optDoubleOrNull("vSolInBondingCurve"),
             vTokensInBondingCurve = obj.optDoubleOrNull("vTokensInBondingCurve"),
             marketCapSol = obj.optDoubleOrNull("marketCapSol"),
-            timestampEpochMs = now
+            timestampEpochMs = now,
+            sourceTimestampEpochMs = obj.sourceTimestampEpochMs(),
+            rawFrame = obj.toString(),
+            providerSource = "PUMPPORTAL"
         )
     }
 

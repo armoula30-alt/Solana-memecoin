@@ -16,7 +16,7 @@ import com.solanasignal.app.ui.theme.WatchAmber
 
 @Composable
 fun LiveScannerScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
-    val tokens by vm.tokens.collectAsState()
+    val rankedTokens by vm.rankedTokens.collectAsState()
     val signals by vm.signals.collectAsState()
 
     // Latest signal (if any) per mint - used only for the status badge (BUY/SELL/WATCH),
@@ -26,7 +26,8 @@ fun LiveScannerScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
 
     LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item { Text("Live Scanner", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
-        items(tokens, key = { it.mint }) { token ->
+        items(rankedTokens, key = { it.token.mint }) { ranked ->
+            val token = ranked.token
             val signal = latestSignalByMint[token.mint]
             val ageSec = (System.currentTimeMillis() - token.firstSeenAtEpochMs) / 1000
             Card(
@@ -35,23 +36,26 @@ fun LiveScannerScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
                 Column(Modifier.padding(12.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("\$${token.symbol ?: token.mint.take(6)}", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                        StatusBadge(signal?.signalType ?: "TRACKING")
+                        StatusBadge(signal?.signalType ?: ranked.rank.state)
                     }
                     Spacer(Modifier.height(4.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         MiniStat("Age", formatAge(ageSec))
-                        MiniStat("MC", token.marketCapUsd?.let { "\$${formatCompact(it)}" } ?: "UNKNOWN")
-                        MiniStat("Liq", token.liquidityUsd?.let { "\$${formatCompact(it)}" } ?: "UNKNOWN")
+                        MiniStat("Price", ranked.market.priceUsd?.let { "\$${formatCompact(it)}" } ?: "UNKNOWN")
+                        MiniStat("MC", ranked.market.marketCapUsd?.let { "\$${formatCompact(it)}" } ?: "UNKNOWN")
+                        MiniStat("Status", ranked.market.status.name)
                     }
                     Spacer(Modifier.height(4.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        MiniStat("B/S (5m)", "${token.buyers5m} / ${token.sellers5m}")
-                        MiniStat("Score", signal?.score?.toString() ?: "\u2014")
+                        MiniStat("B/S (60s)", "${ranked.market.buyCount60s?.toString() ?: "UNKNOWN"} / ${ranked.market.sellCount60s?.toString() ?: "UNKNOWN"}")
+                        MiniStat("Live rank", ranked.rank.score?.toString() ?: "GATHERING")
+                        MiniStat("Momentum 60s", ranked.rank.return60sPct?.let { "%+.2f%%".format(it) } ?: "UNKNOWN")
+                        MiniStat("Signal", signal?.signalType ?: "—")
                     }
                 }
             }
         }
-        if (tokens.isEmpty()) {
+        if (rankedTokens.isEmpty()) {
             item { Text("No tokens discovered yet. Start the scanner from Dashboard.", style = MaterialTheme.typography.bodyMedium) }
         }
     }

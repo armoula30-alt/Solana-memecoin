@@ -36,6 +36,9 @@ interface PaperTradingDao {
     @Query("SELECT * FROM paper_positions WHERE mint = :mint")
     suspend fun position(mint: String): PaperPositionEntity?
 
+    @Query("SELECT mint FROM paper_positions")
+    suspend fun openPositionMints(): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun savePosition(value: PaperPositionEntity)
 
@@ -47,6 +50,9 @@ interface PaperTradingDao {
 
     @Insert
     suspend fun insertTrade(value: PaperTradeEntity): Long
+
+    @Query("SELECT * FROM paper_trades WHERE id = :id LIMIT 1")
+    suspend fun tradeById(id: Long): PaperTradeEntity?
 
     @Query("DELETE FROM paper_positions")
     suspend fun clearPositions()

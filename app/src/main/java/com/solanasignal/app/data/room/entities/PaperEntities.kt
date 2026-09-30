@@ -1,6 +1,7 @@
 package com.solanasignal.app.data.room.entities
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
@@ -42,7 +43,11 @@ data class PaperTradeEntity(
     val feeUsd: Double,
     val slippageUsd: Double,
     val realizedPnlUsd: Double? = null,
-    val reason: String? = null
+    val reason: String? = null,
+    @ColumnInfo(defaultValue = "'UNKNOWN'") val marketDataSource: String = "UNKNOWN",
+    @ColumnInfo(defaultValue = "1") val simulated: Boolean = true,
+    val signalTimestampMs: Long? = null,
+    val holdingDurationMs: Long? = null
 )
 
 @Entity(tableName = "paper_watchlist")
