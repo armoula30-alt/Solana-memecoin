@@ -12,6 +12,7 @@ import com.solanasignal.app.data.room.entities.*
 import com.solanasignal.app.data.settings.BatteryMode
 import com.solanasignal.app.data.settings.SettingsRepository
 import com.solanasignal.app.domain.metrics.MetricsEngine
+import com.solanasignal.app.domain.metrics.WindowMetrics
 import com.solanasignal.app.domain.mc.McObservation
 import com.solanasignal.app.domain.mc.McTrendPressureEngine
 import com.solanasignal.app.domain.evidence.SignalEvidenceEngine
@@ -30,6 +31,31 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import java.util.concurrent.ConcurrentHashMap
+
+data class TokenDiagnostics(
+    val mint: String,
+    val symbol: String?,
+    val tradeCount: Int,
+    val buyCount: Int,
+    val sellCount: Int,
+    val buyVolumeUsd: Double,
+    val sellVolumeUsd: Double,
+    val buyPressure: Double?,
+    val uniqueBuyers: Int,
+    val uniqueSellers: Int,
+    val latestPriceUsd: Double?,
+    val priceChangeByWindow: Map<Int, Double?>,
+    val marketCapUsd: Double?,
+    val marketCapChangePct: Double?,
+    val marketCapChangeByWindow: Map<Int, Double?>,
+    val liquidityUsd: Double?,
+    val firstTradeAtEpochMs: Long?,
+    val latestTradeAtEpochMs: Long?,
+    val ageSeconds: Long?,
+    val validSamplesByWindow: Map<Int, Int>,
+    val signalType: String?,
+    val signalReason: String?
+)
 
 /**
  * Wires the full pipeline: PumpPortal -> WebSocketManager -> Token Discovery / Trade
@@ -66,8 +92,11 @@ class ScannerOrchestrator(
     private var dexScreenerJob: Job? = null
 
     private val lastScoreByMint = ConcurrentHashMap<String, Int>()
+    private val lastSignalTypeByMint = ConcurrentHashMap<String, String>()
+    private val lastSignalReasonByMint = ConcurrentHashMap<String, String>()
     private val marketCapHistoryByMint = ConcurrentHashMap<String, MutableList<Pair<Long, Double>>>()
     private val trackedMints = ConcurrentHashMap.newKeySet<String>()
+    private val discoveredMints = ConcurrentHashMap.newKeySet<String>()
     private val lastActivityByMint = ConcurrentHashMap<String, Long>()
     private val lastAiAnalysisByMint = ConcurrentHashMap<String, Long>()
     private var evictionJob: Job? = null
@@ -120,6 +149,15 @@ class ScannerOrchestrator(
     private val _discoveryTokens = MutableStateFlow(0)
     val discoveryTokens: StateFlow<Int> = _discoveryTokens.asStateFlow()
 
+    private val _initialFilterEvaluations = MutableStateFlow(0)
+    val initialFilterEvaluations: StateFlow<Int> = _initialFilterEvaluations.asStateFlow()
+    private val _initialFilterPassed = MutableStateFlow(0)
+    val initialFilterPassed: StateFlow<Int> = _initialFilterPassed.asStateFlow()
+    private val _initialFilterRejected = MutableStateFlow(0)
+    val initialFilterRejected: StateFlow<Int> = _initialFilterRejected.asStateFlow()
+    private val _initialFilterUnknown = MutableStateFlow(0)
+    val initialFilterUnknown: StateFlow<Int> = _initialFilterUnknown.asStateFlow()
+
     private val _deduplicatedTrades = MutableStateFlow(0)
     val deduplicatedTrades: StateFlow<Int> = _deduplicatedTrades.asStateFlow()
 
@@ -128,7 +166,16 @@ class ScannerOrchestrator(
 
     private val _signalEvaluations = MutableStateFlow(0)
     val signalEvaluations: StateFlow<Int> = _signalEvaluations.asStateFlow()
+    private val _signalsEmitted = MutableStateFlow(0)
+    val signalsEmitted: StateFlow<Int> = _signalsEmitted.asStateFlow()
+    private val _evaluationsRejected = MutableStateFlow(0)
+    val evaluationsRejected: StateFlow<Int> = _evaluationsRejected.asStateFlow()
+    private val _lastRejectionReason = MutableStateFlow<String?>(null)
+    val lastRejectionReason: StateFlow<String?> = _lastRejectionReason.asStateFlow()
     private val runtimeCounterLock = Any()
+    private val tokenDiagnosticsLock = Any()
+    private val _tokenDiagnostics = MutableStateFlow<List<TokenDiagnostics>>(emptyList())
+    val tokenDiagnostics: StateFlow<List<TokenDiagnostics>> = _tokenDiagnostics.asStateFlow()
 
     private val _dexScreenerEnrichedCount = MutableStateFlow(0)
     val dexScreenerEnrichedCount: StateFlow<Int> = _dexScreenerEnrichedCount.asStateFlow()
@@ -140,6 +187,11 @@ class ScannerOrchestrator(
 
     private fun incrementRuntimeCounter(counter: MutableStateFlow<Int>) {
         synchronized(runtimeCounterLock) { counter.value += 1 }
+    }
+
+    private fun recordRejection(reason: String?) {
+        incrementRuntimeCounter(_evaluationsRejected)
+        synchronized(runtimeCounterLock) { _lastRejectionReason.value = reason ?: "REJECTED without a reason" }
     }
 
     fun start() {
@@ -357,6 +409,31 @@ class ScannerOrchestrator(
 
     // --- 9. TOKEN DISCOVERY -------------------------------------------------
     private suspend fun handleTokenCreated(event: NormalizedTokenCreatedEvent) {
+        if (!discoveredMints.add(event.mint)) return
+        incrementRuntimeCounter(_discoveryTokens)
+
+        val filterInput = InitialFilterInput(
+            ageSeconds = event.createdAtEpochMs?.let { ((event.receivedAtEpochMs - it) / 1000L).coerceAtLeast(0L) },
+            marketCapUsd = usd(event.marketCapSol, currentSolUsdPrice()),
+            buys = null,
+            sells = null,
+            buyVolumeUsd = null,
+            sellVolumeUsd = null
+        )
+        val filterDecision = InitialFilterEvaluator.evaluate(filterInput, settings.filterConfig.value)
+        incrementRuntimeCounter(_initialFilterEvaluations)
+        when (filterDecision.status) {
+            InitialFilterStatus.PASS -> incrementRuntimeCounter(_initialFilterPassed)
+            InitialFilterStatus.REJECT -> incrementRuntimeCounter(_initialFilterRejected)
+            InitialFilterStatus.UNKNOWN -> incrementRuntimeCounter(_initialFilterUnknown)
+        }
+        filterDecision.details.forEach { detail ->
+            logSystemEvent(
+                "INITIAL_FILTER_EVALUATION",
+                "mint=${event.mint} result=${filterDecision.status} filter=${detail.name} filterResult=${detail.status} actual=${detail.actualValue} threshold=${detail.configuredThreshold} reason=${detail.reason}"
+            )
+        }
+
         val solPrice = currentSolUsdPrice()
         val token = TokenEntity(
             mint = event.mint,
@@ -378,12 +455,14 @@ class ScannerOrchestrator(
         db.tokenDao().upsert(token)
         recordMarketCap(event.mint, event.receivedAtEpochMs, token.marketCapUsd)
 
+        if (!filterDecision.canTrack) return
+
         val maxTracked = maxTrackedForBatteryMode()
         if (trackedMints.size < maxTracked && trackedMints.add(event.mint)) {
             lastActivityByMint[event.mint] = event.receivedAtEpochMs
             _candidateCount.value = trackedMints.size
-            incrementRuntimeCounter(_discoveryTokens)
             if (!settings.mockMode.value) pumpDevManager?.subscribeTokenTrade(event.mint)
+            refreshTokenDiagnostics(event.mint, event.receivedAtEpochMs, emptyMap())
         }
     }
 
@@ -435,6 +514,58 @@ class ScannerOrchestrator(
         }
 
         analyzeAndMaybeSignal(event.mint, event.timestampEpochMs)
+    }
+
+    private suspend fun refreshTokenDiagnostics(mint: String, nowMs: Long, windows: Map<Int, WindowMetrics>) {
+        val token = db.tokenDao().getByMint(mint) ?: return
+        val trades = db.tradeDao().getSince(mint, 0L)
+        val latest = trades.maxByOrNull { it.timestamp }
+        val first = trades.minByOrNull { it.timestamp }
+        val m5 = windows[300]
+        val validWindowSeconds = listOf(5, 10, 15, 30, 60, 120, 300)
+        val validSamples = validWindowSeconds.associateWith { seconds ->
+            trades.count { it.timestamp >= nowMs - seconds * 1000L }
+        }
+        val marketCaps = marketCapHistoryByMint[mint].orEmpty()
+        val firstMarketCap = marketCaps.firstOrNull()?.second
+        val latestMarketCap = marketCaps.lastOrNull()?.second
+        val marketCapChange = if (firstMarketCap != null && latestMarketCap != null && firstMarketCap > 0.0) {
+            ((latestMarketCap - firstMarketCap) / firstMarketCap) * 100.0
+        } else null
+        val marketCapChanges = listOf(10, 30, 60, 120, 300).associateWith { seconds ->
+            val points = marketCaps.filter { it.first >= nowMs - seconds * 1000L }
+            val first = points.firstOrNull()?.second
+            val last = points.lastOrNull()?.second
+            if (first != null && last != null && first > 0.0) ((last - first) / first) * 100.0 else null
+        }
+        val diagnostics = TokenDiagnostics(
+            mint = mint,
+            symbol = token.symbol,
+            tradeCount = trades.size,
+            buyCount = m5?.buys ?: trades.count { it.side == TradeSide.BUY.name },
+            sellCount = m5?.sells ?: trades.count { it.side == TradeSide.SELL.name },
+            buyVolumeUsd = m5?.buyVolumeUsd ?: trades.filter { it.side == TradeSide.BUY.name }.sumOf { it.amountUsd ?: 0.0 },
+            sellVolumeUsd = m5?.sellVolumeUsd ?: trades.filter { it.side == TradeSide.SELL.name }.sumOf { it.amountUsd ?: 0.0 },
+            buyPressure = m5?.let { if (it.buys + it.sells > 0) it.buys.toDouble() / (it.buys + it.sells) else null },
+            uniqueBuyers = m5?.uniqueBuyers ?: trades.filter { it.side == TradeSide.BUY.name }.mapNotNull { it.trader }.toSet().size,
+            uniqueSellers = m5?.uniqueSellers ?: trades.filter { it.side == TradeSide.SELL.name }.mapNotNull { it.trader }.toSet().size,
+            latestPriceUsd = m5?.latestPriceUsd ?: token.lastPriceUsd,
+            priceChangeByWindow = windows.filterKeys { it in setOf(10, 30, 60, 300) }.mapValues { it.value.priceChangePct },
+            marketCapUsd = token.marketCapUsd,
+            marketCapChangePct = marketCapChange,
+            marketCapChangeByWindow = marketCapChanges,
+            liquidityUsd = token.liquidityUsd,
+            firstTradeAtEpochMs = first?.timestamp,
+            latestTradeAtEpochMs = latest?.timestamp,
+            ageSeconds = ((nowMs - token.firstSeenAtEpochMs) / 1000L).coerceAtLeast(0L),
+            validSamplesByWindow = validSamples,
+            signalType = lastSignalTypeByMint[mint],
+            signalReason = lastSignalReasonByMint[mint]
+        )
+        synchronized(tokenDiagnosticsLock) {
+            _tokenDiagnostics.value = (_tokenDiagnostics.value.filterNot { it.mint == mint } + diagnostics)
+                .sortedByDescending { it.latestTradeAtEpochMs ?: 0L }
+        }
     }
 
     /**
@@ -797,6 +928,12 @@ class ScannerOrchestrator(
             metrics5m = m5, score = score, safety = safety, config = config, nowMs = nowMs,
             marketCapVelocityPct = mcVelocityPctPerMinute
         )
+        if (buyDecision.type == SignalType.REJECTED) {
+            recordRejection(buyDecision.reasons.firstOrNull { it.startsWith("Rejected") } ?: buyDecision.reasons.firstOrNull())
+        }
+        lastSignalTypeByMint[mint] = buyDecision.type.name
+        lastSignalReasonByMint[mint] = buyDecision.reasons.firstOrNull() ?: "UNKNOWN"
+        refreshTokenDiagnostics(mint, nowMs, windows)
 
         if (buyDecision.shouldNotify) {
             persistAndNotify(analyzedToken, buyDecision.type, score.total, buyDecision.reasons, m5)
@@ -833,6 +970,7 @@ class ScannerOrchestrator(
                 dataQualityScore = token.dataQualityScore
             )
         )
+        incrementRuntimeCounter(_signalsEmitted)
         if (type == SignalType.BUY || type == SignalType.SELL) {
             NotificationHelper.showSignalNotification(
                 context, id, token.mint, token.poolAddress, token.symbol ?: token.mint.take(6), type, score, m5, reasons

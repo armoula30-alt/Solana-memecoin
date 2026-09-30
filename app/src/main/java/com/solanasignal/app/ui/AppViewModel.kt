@@ -50,9 +50,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val pumpDevTradeEvents = orchestrator.pumpDevTradeEvents
     val normalizedTradeCount = orchestrator.normalizedTradeCount
     val discoveryTokens = orchestrator.discoveryTokens
+    val initialFilterEvaluations = orchestrator.initialFilterEvaluations
+    val initialFilterPassed = orchestrator.initialFilterPassed
+    val initialFilterRejected = orchestrator.initialFilterRejected
+    val initialFilterUnknown = orchestrator.initialFilterUnknown
     val deduplicatedTrades = orchestrator.deduplicatedTrades
     val metricsUpdates = orchestrator.metricsUpdates
     val signalEvaluations = orchestrator.signalEvaluations
+    val signalsEmitted = orchestrator.signalsEmitted
+    val evaluationsRejected = orchestrator.evaluationsRejected
+    val lastRejectionReason = orchestrator.lastRejectionReason
+    val tokenDiagnostics = orchestrator.tokenDiagnostics
     val dexScreenerEnrichedCount = orchestrator.dexScreenerEnrichedCount
     val tradesReceivedCount = orchestrator.tradesReceivedCount
 
