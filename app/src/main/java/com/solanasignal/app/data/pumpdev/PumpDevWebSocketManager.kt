@@ -13,14 +13,16 @@ import java.util.Collections
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
 import kotlin.math.pow
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Read-only PumpDev market-data WebSocket. No wallet, signing, or trading API. */
 class PumpDevWebSocketManager(
     private val onMessage: (String, Long) -> Unit,
-    private val onSystemEvent: (String, String) -> Unit
+    private val onSystemEvent: (String, String) -> Unit,
+    private val apiKeyProvider: () -> String? = { null }
 ) {
     companion object {
-        private const val URL = "wss://pumpdev.io/ws"
         private const val MAX_BACKOFF_MS = 60_000L
     }
 
@@ -58,6 +60,31 @@ class PumpDevWebSocketManager(
         socket = null
         _connectionState.value = ConnectionState.DISCONNECTED
         _activeSubscriptions.value = 0
+    }
+
+    /** Reconnects once using the latest value from the secure credential provider. */
+    fun reconnectWithCurrentConfiguration() {
+        if (stopped) return
+        generation++
+        socket?.close(1000, "configuration changed")
+        socket = null
+        reconnectAttempt = 0
+        connect()
+    }
+
+    /** Opens a temporary read-only socket, reports only success/failure, then closes it. */
+    suspend fun testConnection(timeoutMs: Long = 8_000L): Boolean {
+        val result = CompletableDeferred<Boolean>()
+        val temporary = client.newWebSocket(
+            Request.Builder().url(PumpDevWebSocketUrl.build(apiKeyProvider())).build(),
+            object : WebSocketListener() {
+                override fun onOpen(ws: WebSocket, response: Response) { result.complete(true) }
+                override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) { result.complete(false) }
+            }
+        )
+        val connected = withTimeoutOrNull(timeoutMs) { result.await() } ?: false
+        temporary.close(1000, "test complete")
+        return connected
     }
 
     fun subscribeTokenTrade(mint: String) {
@@ -101,7 +128,8 @@ class PumpDevWebSocketManager(
         if (stopped) return
         val currentGeneration = ++generation
         _connectionState.value = if (reconnectAttempt == 0) ConnectionState.CONNECTING else ConnectionState.RECONNECTING
-        socket = client.newWebSocket(Request.Builder().url(URL).build(), object : WebSocketListener() {
+        val url = PumpDevWebSocketUrl.build(apiKeyProvider())
+        socket = client.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 if (currentGeneration != generation || stopped) {
                     ws.close(1000, "superseded")
@@ -131,7 +159,7 @@ class PumpDevWebSocketManager(
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 if (!stopped && currentGeneration == generation) {
-                    onSystemEvent("PUMPDEV_RECONNECT", "PumpDev WebSocket failure: ${t.message ?: t.javaClass.simpleName}")
+                    onSystemEvent("PUMPDEV_RECONNECT", PumpDevWebSocketUrl.sanitize("PumpDev WebSocket failure: ${t.message ?: t.javaClass.simpleName}"))
                     scheduleReconnect()
                 }
             }

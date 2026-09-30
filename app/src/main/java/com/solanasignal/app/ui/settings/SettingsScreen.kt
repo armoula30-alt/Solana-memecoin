@@ -7,11 +7,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.solanasignal.app.data.settings.BatteryMode
 import com.solanasignal.app.data.settings.FilterConfig
 import com.solanasignal.app.data.settings.RetentionPolicy
+import com.solanasignal.app.data.pumpportal.ConnectionState
 import com.solanasignal.app.ui.AppViewModel
+import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(vm: AppViewModel) {
@@ -22,9 +25,15 @@ fun SettingsScreen(vm: AppViewModel) {
     val batteryMode by vm.settings.batteryMode.collectAsState()
     val filters by vm.settings.filterConfig.collectAsState()
     val retention by vm.settings.retentionPolicy.collectAsState()
+    val pumpDevKeyConfigured by vm.pumpDevApiKeyConfigured.collectAsState()
+    val pumpDevConnection by vm.pumpDevConnectionState.collectAsState()
+    val coroutineScope = rememberCoroutineScope()
 
     var apiKeyInput by remember { mutableStateOf("") }
     var showKeyField by remember { mutableStateOf(!apiKeyConfigured) }
+    var pumpDevKeyInput by remember { mutableStateOf("") }
+    var showPumpDevKey by remember { mutableStateOf(false) }
+    var pumpDevTestStatus by remember { mutableStateOf<String?>(null) }
 
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
@@ -114,6 +123,50 @@ fun SettingsScreen(vm: AppViewModel) {
         }
 
         item {
+            SettingsCard("Data Providers → PumpDev") {
+                Text("PumpDev WebSocket", fontWeight = FontWeight.SemiBold)
+                Text("wss://pumpdev.io/ws", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                Text("PumpDev Key: ${if (pumpDevKeyConfigured) "CONFIGURED" else "NOT CONFIGURED"}", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = pumpDevKeyInput,
+                    onValueChange = { pumpDevKeyInput = it },
+                    label = { Text(if (pumpDevKeyConfigured) "Replace API key" else "API Key (optional)") },
+                    visualTransformation = if (showPumpDevKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        TextButton(onClick = { showPumpDevKey = !showPumpDevKey }) { Text(if (showPumpDevKey) "Hide" else "Show") }
+                    }
+                )
+                Spacer(Modifier.height(8.dp))
+                Row {
+                    Button(onClick = {
+                        vm.setPumpDevApiKey(pumpDevKeyInput)
+                        pumpDevKeyInput = ""
+                        showPumpDevKey = false
+                        pumpDevTestStatus = null
+                    }) { Text("Save Key") }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(onClick = {
+                        vm.clearPumpDevApiKey()
+                        pumpDevKeyInput = ""
+                        pumpDevTestStatus = null
+                    }) { Text("Clear") }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("Connection status: ${pumpDevTestStatus ?: pumpDevConnection.displayName()}", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(4.dp))
+                OutlinedButton(onClick = {
+                    pumpDevTestStatus = "TESTING"
+                    coroutineScope.launch {
+                        pumpDevTestStatus = if (vm.testPumpDevConnection()) "CONNECTED" else "ERROR"
+                    }
+                }) { Text("Test Connection") }
+            }
+        }
+
+        item {
             SettingsCard("Mock Mode") {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Simulate tokens/trades (no live connection)")
@@ -181,6 +234,13 @@ fun SettingsScreen(vm: AppViewModel) {
             )
         }
     }
+}
+
+private fun ConnectionState.displayName(): String = when (this) {
+    ConnectionState.CONNECTED -> "CONNECTED"
+    ConnectionState.DISCONNECTED -> "DISCONNECTED"
+    ConnectionState.CONNECTING, ConnectionState.RECONNECTING -> "CONNECTING"
+    ConnectionState.DEGRADED -> "ERROR"
 }
 
 @Composable

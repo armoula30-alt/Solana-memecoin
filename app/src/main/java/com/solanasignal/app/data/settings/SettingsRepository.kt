@@ -38,11 +38,9 @@ data class ScoreWeights(
 )
 
 /**
- * SECURITY (spec section 6 / 45): the PumpPortal API key is the only sensitive
- * credential this app holds. It is stored in EncryptedSharedPreferences backed by
- * the Android Keystore, is never logged, never included in crash reports, and is
- * never transmitted anywhere except as part of the official PumpPortal WebSocket
- * URL the user explicitly configured.
+ * Sensitive provider credentials are stored only in EncryptedSharedPreferences,
+ * backed by the Android Keystore. Raw values are exposed only to the matching
+ * provider WebSocket when it builds its connection request and are never logged.
  */
 class SettingsRepository private constructor(context: Context) {
 
@@ -60,6 +58,9 @@ class SettingsRepository private constructor(context: Context) {
 
     private val _apiKeyConfigured = MutableStateFlow(hasApiKey())
     val apiKeyConfigured: StateFlow<Boolean> = _apiKeyConfigured.asStateFlow()
+
+    private val _pumpDevApiKeyConfigured = MutableStateFlow(hasPumpDevApiKey())
+    val pumpDevApiKeyConfigured: StateFlow<Boolean> = _pumpDevApiKeyConfigured.asStateFlow()
 
     private val _codeCraftConfigured = MutableStateFlow(getCodeCraftKeyOrNull() != null)
     val codeCraftConfigured: StateFlow<Boolean> = _codeCraftConfigured.asStateFlow()
@@ -98,6 +99,24 @@ class SettingsRepository private constructor(context: Context) {
         _apiKeyConfigured.value = false
     }
 
+    fun setPumpDevApiKey(key: String) {
+        val value = key.trim()
+        if (value.isBlank()) {
+            clearPumpDevApiKey()
+            return
+        }
+        securePrefs.edit().putString(KEY_PUMPDEV_API_KEY, value).apply()
+        _pumpDevApiKeyConfigured.value = true
+    }
+
+    fun clearPumpDevApiKey() {
+        securePrefs.edit().remove(KEY_PUMPDEV_API_KEY).apply()
+        _pumpDevApiKeyConfigured.value = false
+    }
+
+    fun getPumpDevApiKeyOrNull(): String? =
+        securePrefs.getString(KEY_PUMPDEV_API_KEY, null)?.takeIf { it.isNotBlank() }
+
     fun setCodeCraftKey(key: String) {
         securePrefs.edit().putString(KEY_CODECRAFT_KEY, key.trim()).apply()
         _codeCraftConfigured.value = key.isNotBlank()
@@ -121,6 +140,8 @@ class SettingsRepository private constructor(context: Context) {
     fun getApiKeyOrNull(): String? = securePrefs.getString(KEY_API_KEY, null)?.takeIf { it.isNotBlank() }
 
     private fun hasApiKey(): Boolean = getApiKeyOrNull() != null
+
+    private fun hasPumpDevApiKey(): Boolean = getPumpDevApiKeyOrNull() != null
 
     fun updateFilters(config: FilterConfig) {
         val normalized = config.copy(
@@ -203,6 +224,7 @@ class SettingsRepository private constructor(context: Context) {
 
     companion object {
         private const val KEY_API_KEY = "pumpportal_api_key"
+        private const val KEY_PUMPDEV_API_KEY = "pumpdev_api_key"
         private const val KEY_CODECRAFT_KEY = "codecraft_api_key"
         private const val KEY_CODECRAFT_MODEL = "codecraft_model"
         private const val KEY_FILTER_MAX_AGE = "filter_max_token_age_seconds"

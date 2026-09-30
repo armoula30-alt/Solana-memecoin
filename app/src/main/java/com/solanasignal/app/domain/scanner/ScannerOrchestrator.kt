@@ -140,6 +140,9 @@ class ScannerOrchestrator(
     private val _tradeProvider = MutableStateFlow("PUMPDEV")
     val tradeProvider: StateFlow<String> = _tradeProvider.asStateFlow()
 
+    private val _pumpDevConnectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
+    val pumpDevConnectionState: StateFlow<ConnectionState> = _pumpDevConnectionState.asStateFlow()
+
     private val _normalizedTradeCount = MutableStateFlow(0)
     val normalizedTradeCount: StateFlow<Int> = _normalizedTradeCount.asStateFlow()
 
@@ -157,6 +160,20 @@ class ScannerOrchestrator(
     val initialFilterRejected: StateFlow<Int> = _initialFilterRejected.asStateFlow()
     private val _initialFilterUnknown = MutableStateFlow(0)
     val initialFilterUnknown: StateFlow<Int> = _initialFilterUnknown.asStateFlow()
+    private val _discoveryFilterPassed = MutableStateFlow(0)
+    val discoveryFilterPassed: StateFlow<Int> = _discoveryFilterPassed.asStateFlow()
+    private val _discoveryFilterRejected = MutableStateFlow(0)
+    val discoveryFilterRejected: StateFlow<Int> = _discoveryFilterRejected.asStateFlow()
+    private val _discoveryFilterUnknown = MutableStateFlow(0)
+    val discoveryFilterUnknown: StateFlow<Int> = _discoveryFilterUnknown.asStateFlow()
+    private val _liveFilterEvaluations = MutableStateFlow(0)
+    val liveFilterEvaluations: StateFlow<Int> = _liveFilterEvaluations.asStateFlow()
+    private val _liveFilterPassed = MutableStateFlow(0)
+    val liveFilterPassed: StateFlow<Int> = _liveFilterPassed.asStateFlow()
+    private val _liveFilterRejected = MutableStateFlow(0)
+    val liveFilterRejected: StateFlow<Int> = _liveFilterRejected.asStateFlow()
+    private val _liveFilterUnknown = MutableStateFlow(0)
+    val liveFilterUnknown: StateFlow<Int> = _liveFilterUnknown.asStateFlow()
 
     private val _deduplicatedTrades = MutableStateFlow(0)
     val deduplicatedTrades: StateFlow<Int> = _deduplicatedTrades.asStateFlow()
@@ -222,7 +239,21 @@ class ScannerOrchestrator(
         dexScreenerJob?.cancel()
         evictionJob?.cancel()
         _connectionState.value = ConnectionState.DISCONNECTED
+        _pumpDevConnectionState.value = ConnectionState.DISCONNECTED
         _activeFeedSubscriptions.value = 0
+    }
+
+    fun onPumpDevConfigurationChanged() {
+        pumpDevManager?.reconnectWithCurrentConfiguration()
+    }
+
+    suspend fun testPumpDevConnection(): Boolean {
+        val manager = pumpDevManager ?: PumpDevWebSocketManager(
+            onMessage = { _, _ -> },
+            onSystemEvent = { _, _ -> },
+            apiKeyProvider = { settings.getPumpDevApiKeyOrNull() }
+        )
+        return manager.testConnection()
     }
 
     /**
@@ -354,10 +385,12 @@ class ScannerOrchestrator(
         scope.launch { manager.eventsPerSecond.collect { _eventsPerSecond.value = it } }
         val pumpDev = PumpDevWebSocketManager(
             onMessage = { raw, nowMs -> scope.launch { handlePumpDevMessage(raw, nowMs) } },
-            onSystemEvent = { category, message -> scope.launch { logSystemEvent(category, message) } }
+            onSystemEvent = { category, message -> scope.launch { logSystemEvent(category, message) } },
+            apiKeyProvider = { settings.getPumpDevApiKeyOrNull() }
         )
         pumpDevManager = pumpDev
         pumpDev.start()
+        scope.launch { pumpDev.connectionState.collect { _pumpDevConnectionState.value = it } }
         scope.launch { pumpDev.activeSubscriptions.collect { _activeFeedSubscriptions.value = it } }
         scope.launch { pumpDev.tradesReceived.collect { _pumpDevTradeEvents.value = it } }
     }
@@ -420,17 +453,24 @@ class ScannerOrchestrator(
             buyVolumeUsd = null,
             sellVolumeUsd = null
         )
-        val filterDecision = InitialFilterEvaluator.evaluate(filterInput, settings.filterConfig.value)
+        val filterDecision = InitialFilterEvaluator.evaluateDiscovery(filterInput, settings.filterConfig.value)
         incrementRuntimeCounter(_initialFilterEvaluations)
         when (filterDecision.status) {
             InitialFilterStatus.PASS -> incrementRuntimeCounter(_initialFilterPassed)
             InitialFilterStatus.REJECT -> incrementRuntimeCounter(_initialFilterRejected)
             InitialFilterStatus.UNKNOWN -> incrementRuntimeCounter(_initialFilterUnknown)
         }
+        filterDecision.details.filter { it.stage == InitialFilterStage.DISCOVERY }.forEach { detail ->
+            when (detail.status) {
+                InitialFilterStatus.PASS -> incrementRuntimeCounter(_discoveryFilterPassed)
+                InitialFilterStatus.REJECT -> incrementRuntimeCounter(_discoveryFilterRejected)
+                InitialFilterStatus.UNKNOWN -> incrementRuntimeCounter(_discoveryFilterUnknown)
+            }
+        }
         filterDecision.details.forEach { detail ->
             logSystemEvent(
                 "INITIAL_FILTER_EVALUATION",
-                "mint=${event.mint} result=${filterDecision.status} filter=${detail.name} filterResult=${detail.status} actual=${detail.actualValue} threshold=${detail.configuredThreshold} reason=${detail.reason}"
+                "mint=${event.mint} filter=${detail.name} stage=${detail.stage} result=${detail.status} actual=${detail.actualValue} threshold=${detail.configuredThreshold} reason=${detail.reason}"
             )
         }
 
@@ -514,6 +554,22 @@ class ScannerOrchestrator(
         }
 
         analyzeAndMaybeSignal(event.mint, event.timestampEpochMs)
+    }
+
+    private suspend fun evaluateLiveFilters(mint: String, metrics: WindowMetrics) {
+        val decision = InitialFilterEvaluator.evaluateLive(metrics, settings.filterConfig.value)
+        decision.details.forEach { detail ->
+            incrementRuntimeCounter(_liveFilterEvaluations)
+            when (detail.status) {
+                InitialFilterStatus.PASS -> incrementRuntimeCounter(_liveFilterPassed)
+                InitialFilterStatus.REJECT -> incrementRuntimeCounter(_liveFilterRejected)
+                InitialFilterStatus.UNKNOWN -> incrementRuntimeCounter(_liveFilterUnknown)
+            }
+            logSystemEvent(
+                "LIVE_FILTER",
+                "mint=$mint filter=${detail.name} stage=${detail.stage} result=${detail.status} actual=${detail.actualValue} threshold=${detail.configuredThreshold} reason=${detail.reason}"
+            )
+        }
     }
 
     private suspend fun refreshTokenDiagnostics(mint: String, nowMs: Long, windows: Map<Int, WindowMetrics>) {
@@ -749,6 +805,7 @@ class ScannerOrchestrator(
         val windows = metricsEngine.computeAll(mint, nowMs)
         val m5 = windows[300] ?: return
         val m1 = windows[60] ?: return
+        evaluateLiveFilters(mint, m5)
 
         // Cache live metrics onto the token row so the Scanner list always shows
         // current buyer/seller/volume counts, not just whatever was true the last

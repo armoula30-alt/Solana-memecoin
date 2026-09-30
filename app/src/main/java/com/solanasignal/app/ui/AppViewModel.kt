@@ -47,6 +47,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val activeFeedSubscriptions = orchestrator.activeFeedSubscriptions
     val feedProvider = orchestrator.feedProvider
     val tradeProvider = orchestrator.tradeProvider
+    val pumpDevConnectionState = orchestrator.pumpDevConnectionState
+    val pumpDevApiKeyConfigured = settings.pumpDevApiKeyConfigured
     val pumpDevTradeEvents = orchestrator.pumpDevTradeEvents
     val normalizedTradeCount = orchestrator.normalizedTradeCount
     val discoveryTokens = orchestrator.discoveryTokens
@@ -54,6 +56,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val initialFilterPassed = orchestrator.initialFilterPassed
     val initialFilterRejected = orchestrator.initialFilterRejected
     val initialFilterUnknown = orchestrator.initialFilterUnknown
+    val discoveryFilterPassed = orchestrator.discoveryFilterPassed
+    val discoveryFilterRejected = orchestrator.discoveryFilterRejected
+    val discoveryFilterUnknown = orchestrator.discoveryFilterUnknown
+    val liveFilterEvaluations = orchestrator.liveFilterEvaluations
+    val liveFilterPassed = orchestrator.liveFilterPassed
+    val liveFilterRejected = orchestrator.liveFilterRejected
+    val liveFilterUnknown = orchestrator.liveFilterUnknown
     val deduplicatedTrades = orchestrator.deduplicatedTrades
     val metricsUpdates = orchestrator.metricsUpdates
     val signalEvaluations = orchestrator.signalEvaluations
@@ -164,6 +173,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setApiKey(key: String) = settings.setApiKey(key)
     fun clearApiKey() = settings.clearApiKey()
+    fun setPumpDevApiKey(key: String) {
+        settings.setPumpDevApiKey(key)
+        orchestrator.onPumpDevConfigurationChanged()
+    }
+    fun clearPumpDevApiKey() {
+        settings.clearPumpDevApiKey()
+        orchestrator.onPumpDevConfigurationChanged()
+    }
+    suspend fun testPumpDevConnection(): Boolean = orchestrator.testPumpDevConnection()
     fun setCodeCraftKey(key: String) = settings.setCodeCraftKey(key)
     fun clearCodeCraftKey() = settings.clearCodeCraftKey()
     fun setCodeCraftModel(model: String) = settings.setCodeCraftModel(model)
