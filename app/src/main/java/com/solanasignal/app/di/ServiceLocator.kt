@@ -2,6 +2,7 @@ package com.solanasignal.app.di
 
 import android.content.Context
 import com.solanasignal.app.data.room.AppDatabase
+import com.solanasignal.app.data.market.LiveMarketStateRepository
 import com.solanasignal.app.data.settings.SettingsRepository
 import com.solanasignal.app.domain.scanner.ScannerOrchestrator
 
@@ -12,6 +13,7 @@ import com.solanasignal.app.domain.scanner.ScannerOrchestrator
 object ServiceLocator {
     @Volatile private var appContext: Context? = null
     @Volatile private var orchestratorInstance: ScannerOrchestrator? = null
+    @Volatile private var marketStateInstance: LiveMarketStateRepository? = null
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -22,8 +24,15 @@ object ServiceLocator {
     fun settings(context: Context): SettingsRepository = SettingsRepository.get(context)
     fun database(context: Context): AppDatabase = AppDatabase.get(context)
 
+    fun marketState(context: Context): LiveMarketStateRepository = marketStateInstance ?: synchronized(this) {
+        marketStateInstance ?: LiveMarketStateRepository().also { marketStateInstance = it }
+    }
+
     fun orchestrator(context: Context): ScannerOrchestrator =
         orchestratorInstance ?: synchronized(this) {
-            orchestratorInstance ?: ScannerOrchestrator(context.applicationContext).also { orchestratorInstance = it }
+            orchestratorInstance ?: ScannerOrchestrator(
+                context.applicationContext,
+                marketStates = marketState(context.applicationContext)
+            ).also { orchestratorInstance = it }
         }
 }

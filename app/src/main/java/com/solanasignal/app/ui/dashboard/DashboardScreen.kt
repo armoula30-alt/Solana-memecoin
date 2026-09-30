@@ -27,6 +27,7 @@ fun DashboardScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
     val running by vm.running.collectAsState()
     val connection by vm.connectionState.collectAsState()
     val tokens by vm.tokens.collectAsState()
+    val rankedTokens by vm.rankedTokens.collectAsState()
     val signals by vm.signals.collectAsState()
     val mockMode by vm.settings.mockMode.collectAsState()
     val solPrice by vm.solUsdPrice.collectAsState()
@@ -86,6 +87,31 @@ fun DashboardScreen(vm: AppViewModel, onOpenToken: (String) -> Unit) {
                 StatCard("TODAY", signalsToday.toString(), Modifier.weight(1f))
                 StatCard("AVG SCORE", "%.0f".format(avgScore), Modifier.weight(1f))
                 StatCard("SOL", solPrice?.let { "$%.0f".format(it) } ?: "?", Modifier.weight(1f))
+            }
+        }
+
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("LIVE CANDIDATES", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("re-ranked every 2s", color = TextMuted, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        if (rankedTokens.isEmpty()) {
+            item { Text("Waiting for tracked tokens", color = TextMuted, style = MaterialTheme.typography.bodySmall) }
+        } else {
+            items(rankedTokens.take(6), key = { "live-${it.token.mint}" }) { ranked ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                    modifier = Modifier.fillMaxWidth().clickable { onOpenToken(ranked.token.mint) }
+                ) {
+                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("${ranked.token.symbol ?: ranked.token.mint.take(8)}  •  ${ranked.market.status.name}", fontWeight = FontWeight.Bold)
+                            Text("${ranked.rank.state}  •  MC ${ranked.market.marketCapUsd?.let { "\$%.0f".format(it) } ?: "UNKNOWN"}  •  ${ranked.rank.return60sPct?.let { "%+.2f%% / 60s".format(it) } ?: "insufficient live history"}", color = TextMuted, style = MaterialTheme.typography.labelSmall)
+                        }
+                        Text(ranked.rank.score?.toString() ?: "—", color = NeutralBlue, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
 

@@ -36,6 +36,9 @@ interface PaperTradingDao {
     @Query("SELECT * FROM paper_positions WHERE mint = :mint")
     suspend fun position(mint: String): PaperPositionEntity?
 
+    @Query("SELECT mint FROM paper_positions")
+    suspend fun openPositionMints(): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun savePosition(value: PaperPositionEntity)
 

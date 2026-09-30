@@ -1,11 +1,15 @@
 package com.solanasignal.app.domain.scanner
 
 import android.content.Context
+import com.solanasignal.app.data.market.LiveMarketStateRepository
+import com.solanasignal.app.data.market.LiveTradeTick
+import com.solanasignal.app.data.market.MarketDataSource
 import com.solanasignal.app.data.codecraft.CodeCraftClient
 import com.solanasignal.app.data.dexscreener.DexScreenerClient
 import com.solanasignal.app.data.dexscreener.DexScreenerPairInfo
 import com.solanasignal.app.data.pumpportal.*
 import com.solanasignal.app.data.room.AppDatabase
+import com.solanasignal.app.data.room.SignalOutcomeRecorder
 import com.solanasignal.app.data.room.entities.*
 import com.solanasignal.app.data.settings.BatteryMode
 import com.solanasignal.app.data.settings.SettingsRepository
@@ -26,6 +30,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import org.json.JSONArray
 import java.util.concurrent.ConcurrentHashMap
 
@@ -41,9 +46,11 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class ScannerOrchestrator(
     private val context: Context,
-    private val settings: SettingsRepository = SettingsRepository.get(context)
+    private val settings: SettingsRepository = SettingsRepository.get(context),
+    private val marketStates: LiveMarketStateRepository = LiveMarketStateRepository()
 ) {
     private val db = AppDatabase.get(context)
+    private val signalOutcomeRecorder = SignalOutcomeRecorder()
     private val metricsEngine = MetricsEngine()
     private val safetyEngine = SafetyEngine()
     private val scoringEngine = ScoringEngine()
@@ -61,6 +68,8 @@ class ScannerOrchestrator(
     private var mockSource: MockEventSource? = null
     private var webSocketManager: PumpPortalWebSocketManager? = null
     private var dexScreenerJob: Job? = null
+    private var marketStatusJob: Job? = null
+    private var tradeStreamSettingJob: Job? = null
 
     private val lastScoreByMint = ConcurrentHashMap<String, Int>()
     private val marketCapHistoryByMint = ConcurrentHashMap<String, MutableList<Pair<Long, Double>>>()
@@ -108,6 +117,7 @@ class ScannerOrchestrator(
         if (_running.value) return
         _running.value = true
         try {
+            startMarketStatusTicker()
             solPriceProvider.start(scope)
             if (settings.mockMode.value) startMock() else startLive()
             startDexScreenerEnrichment()
@@ -129,7 +139,19 @@ class ScannerOrchestrator(
         solPriceProvider.stop()
         dexScreenerJob?.cancel()
         evictionJob?.cancel()
+        marketStatusJob?.cancel()
+        tradeStreamSettingJob?.cancel()
         _connectionState.value = ConnectionState.DISCONNECTED
+        marketStates.setConnectionState(ConnectionState.DISCONNECTED)
+    }
+
+    fun refreshPumpPortalCredentials() {
+        val manager = webSocketManager ?: return
+        val activeMints = trackedMints.toList()
+        manager.unsubscribeTokenTrades(activeMints)
+        marketStates.endTradeTracking(activeMints)
+        activeMints.forEach(metricsEngine::dropToken)
+        manager.reconnectNow()
     }
 
     /**
@@ -146,9 +168,10 @@ class ScannerOrchestrator(
             while (isActive) {
                 delay(60_000)
                 val staleCutoff = System.currentTimeMillis() - 5 * 60_000
+                val openPaperMints = db.paperTradingDao().openPositionMints().toSet()
                 val stale = trackedMints.filter { mint ->
                     val last = lastActivityByMint[mint]
-                    last == null || last < staleCutoff
+                    mint !in openPaperMints && (last == null || last < staleCutoff)
                 }
                 if (stale.isEmpty()) continue
                 stale.forEach { mint ->
@@ -156,8 +179,21 @@ class ScannerOrchestrator(
                     lastActivityByMint.remove(mint)
                     metricsEngine.dropToken(mint)
                 }
+                webSocketManager?.unsubscribeTokenTrades(stale)
+                stale.forEach(marketStates::markRemoved)
                 _trackedSubscriptionCount.value = trackedMints.size
                 logSystemEvent("SUBSCRIPTION", "Evicted ${stale.size} stale token(s) with no trades in 5m, freeing slots")
+            }
+        }
+    }
+
+    /** Refreshes freshness on a local cadence; it never polls or fabricates a market tick. */
+    private fun startMarketStatusTicker() {
+        marketStatusJob?.cancel()
+        marketStatusJob = scope.launch {
+            while (isActive) {
+                marketStates.refreshStatuses(System.currentTimeMillis())
+                delay(2_000L)
             }
         }
     }
@@ -185,7 +221,6 @@ class ScannerOrchestrator(
                         var enrichedCount = 0
                         pairs.forEach { (mint, info) ->
                             val token = db.tokenDao().getByMint(mint) ?: return@forEach
-                            lastActivityByMint[mint] = System.currentTimeMillis()
                             val dataQuality = calculateDataQuality(info)
                             val enrichedToken = token.copy(
                                     poolAddress = info.pairAddress,
@@ -219,6 +254,16 @@ class ScannerOrchestrator(
                                     dataQualityLabel = dataQuality.second
                                 )
                             db.tokenDao().upsert(enrichedToken)
+                            marketStates.updateRestSnapshot(
+                                mint = mint,
+                                symbol = enrichedToken.symbol,
+                                name = enrichedToken.name,
+                                priceUsd = info.priceUsd,
+                                marketCapUsd = info.marketCapUsd,
+                                liquidityUsd = info.liquidityUsd,
+                                volumeUsd = info.volume5mUsd,
+                                nowMs = System.currentTimeMillis()
+                            )
                             analyzeDexAndMaybeSignal(enrichedToken, info)
                             enrichedCount++
                         }
@@ -247,10 +292,39 @@ class ScannerOrchestrator(
         // _tradesReceivedCount itself, since that path also runs in Mock Mode and
         // counts post-dedupe; forwarding the manager's own separate raw-message
         // counter here as well would race two writers against the same flow.)
-        scope.launch { manager.connectionState.collect { _connectionState.value = it } }
+        scope.launch {
+            var previousState: ConnectionState? = null
+            manager.connectionState.collect { state ->
+                _connectionState.value = state
+                marketStates.setConnectionState(state)
+                if (state == ConnectionState.CONNECTED && previousState != ConnectionState.CONNECTED &&
+                    settings.liveTradeStreamingEnabled.value && settings.getApiKeyOrNull() != null && !settings.mockMode.value
+                ) {
+                    val activeMints = trackedMints.toList()
+                    activeMints.forEach(metricsEngine::dropToken)
+                }
+                previousState = state
+            }
+        }
         scope.launch { manager.reconnectCount.collect { _reconnectCount.value = it } }
         scope.launch { manager.parserErrorCount.collect { _parserErrorCount.value = it } }
         scope.launch { manager.eventsPerSecond.collect { _eventsPerSecond.value = it } }
+        tradeStreamSettingJob?.cancel()
+        tradeStreamSettingJob = scope.launch {
+            settings.liveTradeStreamingEnabled.collectLatest { enabled ->
+                val keyConfigured = settings.getApiKeyOrNull() != null
+                val activeMints = trackedMints.toList()
+                if (enabled && keyConfigured && !settings.mockMode.value) {
+                    marketStates.beginTradeTracking(activeMints)
+                    activeMints.forEach(metricsEngine::dropToken)
+                    manager.subscribeTokenTrades(activeMints)
+                } else {
+                    manager.unsubscribeTokenTrades(activeMints)
+                    marketStates.endTradeTracking(activeMints)
+                    activeMints.forEach(metricsEngine::dropToken)
+                }
+            }
+        }
     }
 
     private fun startMock() {
@@ -260,6 +334,7 @@ class ScannerOrchestrator(
         // No real socket in mock mode - report CONNECTED so the status screen
         // doesn't falsely suggest something is broken while simulating data.
         _connectionState.value = ConnectionState.CONNECTED
+        marketStates.setConnectionState(ConnectionState.CONNECTED)
         val source = MockEventSource(
             onTokenCreated = { event -> scope.launch { handleTokenCreated(event) } },
             onTrade = { event -> scope.launch { handleTrade(event) } }
@@ -305,6 +380,14 @@ class ScannerOrchestrator(
             source = if (settings.mockMode.value) "mock" else "pumpportal"
         )
         db.tokenDao().upsert(token)
+        marketStates.updateDiscovery(
+            mint = event.mint,
+            symbol = event.symbol,
+            name = event.name,
+            marketCapUsd = token.marketCapUsd,
+            liquidityUsd = token.liquidityUsd,
+            nowMs = event.receivedAtEpochMs
+        )
         recordMarketCap(event.mint, event.receivedAtEpochMs, token.marketCapUsd)
 
         val maxTracked = maxTrackedForBatteryMode()
@@ -312,6 +395,11 @@ class ScannerOrchestrator(
             trackedMints.add(event.mint)
             lastActivityByMint[event.mint] = event.receivedAtEpochMs
             _trackedSubscriptionCount.value = trackedMints.size
+            if (settings.liveTradeStreamingEnabled.value && settings.getApiKeyOrNull() != null && !settings.mockMode.value) {
+                marketStates.beginTradeTracking(listOf(event.mint), event.receivedAtEpochMs)
+                metricsEngine.dropToken(event.mint)
+                webSocketManager?.subscribeTokenTrades(listOf(event.mint))
+            }
         }
     }
 
@@ -347,6 +435,24 @@ class ScannerOrchestrator(
 
         db.tokenDao().getByMint(event.mint)?.let { token ->
             val currentMarketCapUsd = usd(event.marketCapSol, solPrice) ?: token.marketCapUsd
+            val currentLiquidityUsd = usd(event.vSolInBondingCurve, solPrice) ?: token.liquidityUsd
+            marketStates.updateTrade(
+                mint = event.mint,
+                symbol = token.symbol,
+                name = token.name,
+                priceUsd = priceUsd,
+                marketCapUsd = currentMarketCapUsd,
+                liquidityUsd = currentLiquidityUsd,
+                tick = LiveTradeTick(
+                    timestampMs = event.timestampEpochMs,
+                    side = event.side,
+                    priceUsd = priceUsd,
+                    amountUsd = amountUsd,
+                    trader = event.trader,
+                    signature = event.signature
+                ),
+                source = if (settings.mockMode.value) MarketDataSource.MOCK else MarketDataSource.PUMPPORTAL_TRADE
+            )
             db.tokenDao().upsert(
                 token.copy(
                     lastPriceUsd = priceUsd ?: token.lastPriceUsd,
@@ -360,6 +466,9 @@ class ScannerOrchestrator(
         }
 
         analyzeAndMaybeSignal(event.mint, event.timestampEpochMs)
+        if (!settings.mockMode.value) {
+            signalOutcomeRecorder.onLiveTrade(db, event.mint, event.timestampEpochMs, priceUsd)
+        }
     }
 
     /**
@@ -367,6 +476,10 @@ class ScannerOrchestrator(
      * DexScreener supplies the market activity used for scoring and signals.
      */
     private suspend fun analyzeDexAndMaybeSignal(token: TokenEntity, info: DexScreenerPairInfo) {
+        // In metered live-stream mode, tracked tokens reach the unchanged SignalEngine
+        // through analyzeAndMaybeSignal() on each normalized PumpPortal trade. Do not
+        // also emit signals from a slower REST snapshot for the same mint.
+        if (!settings.mockMode.value && settings.liveTradeStreamingEnabled.value && token.mint in trackedMints) return
         val nowMs = System.currentTimeMillis()
         val ageSeconds = (nowMs - token.firstSeenAtEpochMs).coerceAtLeast(0L) / 1000L
         // The filter must use the fresh DexScreener snapshot, not the older

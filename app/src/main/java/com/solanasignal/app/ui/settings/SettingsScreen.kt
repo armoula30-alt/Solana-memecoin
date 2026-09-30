@@ -19,6 +19,7 @@ fun SettingsScreen(vm: AppViewModel) {
     val codeCraftConfigured by vm.settings.codeCraftConfigured.collectAsState()
     val codeCraftModel by vm.settings.codeCraftModel.collectAsState()
     val mockMode by vm.settings.mockMode.collectAsState()
+    val liveTradeStreaming by vm.settings.liveTradeStreamingEnabled.collectAsState()
     val batteryMode by vm.settings.batteryMode.collectAsState()
     val filters by vm.settings.filterConfig.collectAsState()
     val retention by vm.settings.retentionPolicy.collectAsState()
@@ -37,9 +38,27 @@ fun SettingsScreen(vm: AppViewModel) {
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "PumpPortal is used only to discover new mints. The app then polls DexScreener for market data and analyzes it; PumpPortal trade subscriptions are not used.",
+                    "Token discovery is free. Live token-trade streaming is a separate, metered PumpPortal feature and is OFF by default.",
                     style = MaterialTheme.typography.bodySmall
                 )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Official rate: 0.01 SOL per 10,000 received trade events. Requires an API key linked to a wallet funded with at least 0.02 SOL. Fees depend on actual event volume; the app does not estimate or pay a fixed amount.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text("Enable metered live trade stream", fontWeight = FontWeight.Medium)
+                        Text("Subscribes only to actively tracked tokens while scanning.", style = MaterialTheme.typography.labelSmall)
+                    }
+                    Switch(
+                        checked = liveTradeStreaming,
+                        enabled = apiKeyConfigured,
+                        onCheckedChange = vm::setLiveTradeStreamingEnabled
+                    )
+                }
+                if (!apiKeyConfigured) Text("Set a PumpPortal API key before enabling live trades.", style = MaterialTheme.typography.labelSmall)
                 Spacer(Modifier.height(8.dp))
                 if (showKeyField) {
                     OutlinedTextField(

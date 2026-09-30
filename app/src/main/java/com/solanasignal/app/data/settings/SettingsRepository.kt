@@ -84,18 +84,26 @@ class SettingsRepository private constructor(context: Context) {
     private val _mockMode = MutableStateFlow(false)
     val mockMode: StateFlow<Boolean> = _mockMode.asStateFlow()
 
+    private val _liveTradeStreamingEnabled = MutableStateFlow(
+        securePrefs.getBoolean(KEY_LIVE_TRADE_STREAMING, false)
+    )
+    val liveTradeStreamingEnabled: StateFlow<Boolean> = _liveTradeStreamingEnabled.asStateFlow()
+
     private val _retentionPolicy = MutableStateFlow(RetentionPolicy.THIRTY)
     val retentionPolicy: StateFlow<RetentionPolicy> = _retentionPolicy.asStateFlow()
 
     fun setApiKey(key: String) {
         // Never logged. Stored only in the Keystore-backed encrypted prefs.
-        securePrefs.edit().putString(KEY_API_KEY, key.trim()).apply()
-        _apiKeyConfigured.value = key.isNotBlank()
+        val normalized = key.trim()
+        if (getApiKeyOrNull() != normalized) setLiveTradeStreamingEnabled(false)
+        securePrefs.edit().putString(KEY_API_KEY, normalized).apply()
+        _apiKeyConfigured.value = normalized.isNotBlank()
     }
 
     fun clearApiKey() {
         securePrefs.edit().remove(KEY_API_KEY).apply()
         _apiKeyConfigured.value = false
+        setLiveTradeStreamingEnabled(false)
     }
 
     fun setCodeCraftKey(key: String) {
@@ -168,7 +176,15 @@ class SettingsRepository private constructor(context: Context) {
         _engineConfig.value = config
     }
     fun setBatteryMode(mode: BatteryMode) { _batteryMode.value = mode }
-    fun setMockMode(enabled: Boolean) { _mockMode.value = enabled }
+    fun setMockMode(enabled: Boolean) {
+        _mockMode.value = enabled
+        if (enabled) setLiveTradeStreamingEnabled(false)
+    }
+    fun setLiveTradeStreamingEnabled(enabled: Boolean) {
+        val allowed = enabled && hasApiKey() && !_mockMode.value
+        securePrefs.edit().putBoolean(KEY_LIVE_TRADE_STREAMING, allowed).apply()
+        _liveTradeStreamingEnabled.value = allowed
+    }
     fun setRetentionPolicy(policy: RetentionPolicy) { _retentionPolicy.value = policy }
 
     private fun loadFilterConfig(): FilterConfig = FilterConfig(
@@ -226,6 +242,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_ENGINE_FRESHNESS = "engine_data_freshness_seconds"
         private const val KEY_ENGINE_SPIKE_SHARE = "engine_anti_spike_largest_share"
         private const val KEY_ENGINE_SPIKE_BUYERS = "engine_anti_spike_min_buyers"
+        private const val KEY_LIVE_TRADE_STREAMING = "live_trade_streaming_enabled"
         const val DEFAULT_CODECRAFT_MODEL = "claude-opus-4.8"
 
         @Volatile private var instance: SettingsRepository? = null

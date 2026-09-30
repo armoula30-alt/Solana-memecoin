@@ -42,7 +42,9 @@ data class PaperTradeEntity(
     val feeUsd: Double,
     val slippageUsd: Double,
     val realizedPnlUsd: Double? = null,
-    val reason: String? = null
+    val reason: String? = null,
+    val marketDataSource: String = "UNKNOWN",
+    val simulated: Boolean = true
 )
 
 @Entity(tableName = "paper_watchlist")

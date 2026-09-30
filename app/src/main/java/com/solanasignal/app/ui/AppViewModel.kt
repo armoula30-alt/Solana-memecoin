@@ -3,6 +3,9 @@ package com.solanasignal.app.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.solanasignal.app.data.market.LiveMarketState
+import com.solanasignal.app.data.market.MarketDataSource
+import com.solanasignal.app.data.market.MarketDataStatus
 import com.solanasignal.app.data.chart.ChartCandle
 import com.solanasignal.app.data.chart.ChartDataRepository
 import com.solanasignal.app.data.chart.ChartInterval
@@ -17,11 +20,15 @@ import com.solanasignal.app.domain.paper.PaperTradeResult
 import com.solanasignal.app.domain.paper.PaperTradingEngine
 import com.solanasignal.app.domain.paper.AutoPaperConfig
 import com.solanasignal.app.domain.paper.AutoPaperStatus
+import com.solanasignal.app.domain.scanner.LiveCandidateRank
+import com.solanasignal.app.domain.scanner.LiveCandidateRanker
 import com.solanasignal.app.data.settings.*
 import com.solanasignal.app.di.ServiceLocator
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.onStart
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -29,6 +36,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val settings: SettingsRepository = ServiceLocator.settings(ctx)
     private val db = ServiceLocator.database(ctx)
     private val orchestrator = ServiceLocator.orchestrator(ctx)
+    private val marketStateRepository = ServiceLocator.marketState(ctx)
+    val liveMarketStates = marketStateRepository.states
+    private val candidateRanker = LiveCandidateRanker()
     private val chartRepository = ChartDataRepository(db)
     private val paperEngine = PaperTradingEngine(db)
     private var autoPaperJob: kotlinx.coroutines.Job? = null
@@ -50,6 +60,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val tokens: StateFlow<List<TokenEntity>> =
         db.tokenDao().observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    private val rankTicker = flow {
+        while (true) {
+            emit(System.currentTimeMillis())
+            delay(2_000L)
+        }
+    }.onStart { emit(System.currentTimeMillis()) }
+
+    val rankedTokens: StateFlow<List<RankedToken>> = combine(tokens, liveMarketStates, rankTicker) { values, market, now ->
+        values.map { token ->
+            val state = market[token.mint] ?: LiveMarketState(
+                mint = token.mint,
+                symbol = token.symbol,
+                name = token.name,
+                priceUsd = token.lastPriceUsd,
+                marketCapUsd = token.marketCapUsd,
+                liquidityUsd = token.liquidityUsd,
+                status = MarketDataStatus.UNKNOWN
+            )
+            RankedToken(token, state, candidateRanker.rank(state, now))
+        }.sortedWith(
+            compareByDescending<RankedToken> { statusPriority(it.market.status) }
+                .thenByDescending { it.rank.score ?: -1 }
+                .thenByDescending { it.rank.return60sPct ?: Double.NEGATIVE_INFINITY }
+                .thenByDescending { it.token.firstSeenAtEpochMs }
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val signals: StateFlow<List<SignalEntity>> =
         db.signalDao().observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -65,11 +102,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val paperWatchlist: StateFlow<List<PaperWatchlistEntity>> =
         db.paperTradingDao().observeWatchlist().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val paperAnalytics: StateFlow<PaperAnalytics> = combine(paperPortfolio, paperPositions, paperTrades, tokens) { portfolio, positions, trades, marketTokens ->
-        val tokenMap = marketTokens.associateBy { it.mint }
-        val unrealized = positions.sumOf { position ->
-            val current = tokenMap[position.mint]?.lastPriceUsd ?: position.currentPriceUsd
-            (current - position.averageEntryPriceUsd) * position.quantity
+    val paperAnalytics: StateFlow<PaperAnalytics> = combine(paperPortfolio, paperPositions, paperTrades, liveMarketStates) { portfolio, positions, trades, market ->
+        val freshMarks = positions.mapNotNull { position ->
+            market[position.mint]?.takeIf { it.isFreshTradeQuote(System.currentTimeMillis(), marketStateRepository.staleAfterMs) }
+                ?.priceUsd?.let { (it - position.averageEntryPriceUsd) * position.quantity }
+        }
+        val unrealized = when {
+            positions.isEmpty() -> 0.0
+            freshMarks.size == positions.size -> freshMarks.sum()
+            else -> null
         }
         val completed = trades.filter { it.side == "PAPER_SELL" }
         val wins = completed.count { (it.realizedPnlUsd ?: 0.0) > 0.0 }
@@ -82,12 +123,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun paperBuy(mint: String, amountUsd: Double): PaperTradeResult {
         val token = db.tokenDao().getByMint(mint) ?: return PaperTradeResult.Rejected("Token not found")
-        return paperEngine.buy(mint, token.symbol, amountUsd, token.lastPriceUsd ?: 0.0, token.liquidityUsd, token.marketCapUsd)
+        val state = liveMarketStates.value[mint] ?: return PaperTradeResult.Rejected("No live trade quote for this token")
+        val now = System.currentTimeMillis()
+        if (!canPaperTrade(mint, now)) {
+            return PaperTradeResult.Rejected("Paper BUY requires a fresh PumpPortal trade-stream price; REST snapshots and stale quotes are not executable")
+        }
+        return paperEngine.buy(mint, token.symbol, amountUsd, state.priceUsd ?: 0.0, state.liquidityUsd, state.marketCapUsd, marketDataSource = MarketDataSource.PUMPPORTAL_TRADE.name)
     }
+
+    fun canPaperTrade(mint: String, nowMs: Long = System.currentTimeMillis()): Boolean =
+        settings.liveTradeStreamingEnabled.value && settings.getApiKeyOrNull() != null && !settings.mockMode.value &&
+            liveMarketStates.value[mint]?.isFreshTradeQuote(nowMs, marketStateRepository.staleAfterMs) == true
 
     suspend fun paperSell(mint: String, quantity: Double): PaperTradeResult {
         val token = db.tokenDao().getByMint(mint) ?: return PaperTradeResult.Rejected("Token not found")
-        return paperEngine.sell(mint, token.symbol, quantity, token.lastPriceUsd ?: 0.0, token.liquidityUsd, token.marketCapUsd)
+        val state = liveMarketStates.value[mint] ?: return PaperTradeResult.Rejected("No live trade quote for this token")
+        val now = System.currentTimeMillis()
+        if (!canPaperTrade(mint, now)) {
+            return PaperTradeResult.Rejected("Paper SELL requires a fresh PumpPortal trade-stream price; REST snapshots and stale quotes are not executable")
+        }
+        return paperEngine.sell(mint, token.symbol, quantity, state.priceUsd ?: 0.0, state.liquidityUsd, state.marketCapUsd, marketDataSource = MarketDataSource.PUMPPORTAL_TRADE.name)
     }
 
     fun setAutoPaperTrading(enabled: Boolean) {
@@ -109,10 +164,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val currentPositions = db.paperTradingDao().let { dao -> currentTokens.mapNotNull { token -> dao.position(token.mint)?.let { token to it } } }
             var lastDecision = "No token passed all entry gates"
             currentPositions.forEach { (token, position) ->
-                val price = token.lastPriceUsd ?: return@forEach
+                val quote = liveMarketStates.value[token.mint]?.takeIf { canPaperTrade(token.mint) } ?: return@forEach
+                val price = quote.priceUsd ?: return@forEach
                 val pnlPct = ((price - position.averageEntryPriceUsd) / position.averageEntryPriceUsd) * 100.0
                 if (pnlPct >= autoPaperConfig.takeProfitPct || pnlPct <= autoPaperConfig.stopLossPct || (token.marketCapVelocityPct ?: 0.0) < 0.0) {
-                    val result = paperEngine.sell(token.mint, token.symbol, position.quantity, price, token.liquidityUsd, token.marketCapUsd, "Auto exit: ${if (pnlPct >= autoPaperConfig.takeProfitPct) "take-profit" else if (pnlPct <= autoPaperConfig.stopLossPct) "stop-loss" else "MC trend turned negative"}")
+                    val result = paperEngine.sell(token.mint, token.symbol, position.quantity, price, quote.liquidityUsd, quote.marketCapUsd, "Auto exit: ${if (pnlPct >= autoPaperConfig.takeProfitPct) "take-profit" else if (pnlPct <= autoPaperConfig.stopLossPct) "stop-loss" else "MC trend turned negative"}", MarketDataSource.PUMPPORTAL_TRADE.name)
                     if (result is PaperTradeResult.Success) _autoPaperStatus.value = _autoPaperStatus.value.copy(exits = _autoPaperStatus.value.exits + 1)
                 }
             }
@@ -120,14 +176,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 currentTokens.filter { token ->
                     val velocity = token.marketCapVelocityPct
                     val recent = autoEntryTimes[token.mint] ?: 0L
-                    token.lastPriceUsd != null && (token.liquidityUsd ?: 0.0) >= autoPaperConfig.minLiquidityUsd &&
+                    canPaperTrade(token.mint) && (liveMarketStates.value[token.mint]?.liquidityUsd ?: 0.0) >= autoPaperConfig.minLiquidityUsd &&
                         (token.momentumScore ?: -1) >= autoPaperConfig.minMomentum &&
                         (token.manipulationRiskScore ?: 101) <= autoPaperConfig.maxRisk &&
                         (token.dataConfidenceScore ?: 0) >= autoPaperConfig.minDataConfidence &&
                         velocity != null && velocity >= autoPaperConfig.minMcVelocityPctPerMinute &&
                         now - recent >= autoPaperConfig.cooldownMs && currentPositions.none { it.first.mint == token.mint }
                 }.take(autoPaperConfig.maxOpenPositions - currentPositions.size).forEach { token ->
-                    val result = paperEngine.buy(token.mint, token.symbol, autoPaperConfig.entryAmountUsd, token.lastPriceUsd ?: 0.0, token.liquidityUsd, token.marketCapUsd, "Auto entry: momentum + rising MC + risk gates")
+                    val quote = liveMarketStates.value[token.mint] ?: return@forEach
+                    val result = paperEngine.buy(token.mint, token.symbol, autoPaperConfig.entryAmountUsd, quote.priceUsd ?: 0.0, quote.liquidityUsd, quote.marketCapUsd, "Auto entry: momentum + rising MC + risk gates", MarketDataSource.PUMPPORTAL_TRADE.name)
                     if (result is PaperTradeResult.Success) {
                         autoEntryTimes[token.mint] = now
                         _autoPaperStatus.value = _autoPaperStatus.value.copy(entries = _autoPaperStatus.value.entries + 1)
@@ -145,12 +202,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun addToWatchlist(mint: String) { viewModelScope.launch { db.paperTradingDao().addWatchlist(PaperWatchlistEntity(mint)) } }
     fun removeFromWatchlist(mint: String) { viewModelScope.launch { db.paperTradingDao().removeWatchlist(mint) } }
 
-    fun setApiKey(key: String) = settings.setApiKey(key)
-    fun clearApiKey() = settings.clearApiKey()
+    fun setApiKey(key: String) {
+        settings.setApiKey(key)
+        orchestrator.refreshPumpPortalCredentials()
+    }
+    fun clearApiKey() {
+        settings.clearApiKey()
+        orchestrator.refreshPumpPortalCredentials()
+    }
     fun setCodeCraftKey(key: String) = settings.setCodeCraftKey(key)
     fun clearCodeCraftKey() = settings.clearCodeCraftKey()
     fun setCodeCraftModel(model: String) = settings.setCodeCraftModel(model)
     fun setMockMode(enabled: Boolean) = settings.setMockMode(enabled)
+    fun setLiveTradeStreamingEnabled(enabled: Boolean) = settings.setLiveTradeStreamingEnabled(enabled)
     fun setBatteryMode(mode: BatteryMode) = settings.setBatteryMode(mode)
     fun updateFilters(config: FilterConfig) = settings.updateFilters(config)
     fun updateWeights(weights: ScoreWeights) = settings.updateWeights(weights)
@@ -174,9 +238,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 }
 
+data class RankedToken(
+    val token: TokenEntity,
+    val market: LiveMarketState,
+    val rank: LiveCandidateRank
+)
+
+private fun statusPriority(status: MarketDataStatus): Int = when (status) {
+    MarketDataStatus.LIVE -> 3
+    MarketDataStatus.STALE -> 2
+    MarketDataStatus.UNKNOWN -> 1
+    MarketDataStatus.DISCONNECTED -> 0
+}
+
 data class PaperAnalytics(
     val cashUsd: Double = 1_000.0,
-    val unrealizedPnlUsd: Double = 0.0,
+    val unrealizedPnlUsd: Double? = 0.0,
     val realizedPnlUsd: Double = 0.0,
     val closedTrades: Int = 0,
     val winRate: Double? = null,

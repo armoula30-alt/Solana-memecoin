@@ -232,7 +232,7 @@ data class TokenFeatureSnapshotEntity(
 
 @Entity(
     tableName = "signal_outcomes",
-    indices = [Index(value = ["signalId"])]
+    indices = [Index(value = ["signalId"]), Index(value = ["signalId", "elapsedSeconds"], unique = true)]
 )
 data class SignalOutcomeEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -246,7 +246,10 @@ data class SignalOutcomeEntity(
     val signalClass: String? = null,
     val momentumScore: Int? = null,
     val riskScore: Int? = null,
-    val dataQualityScore: Int? = null
+    val dataQualityScore: Int? = null,
+    val maxGainPct: Double? = null,
+    val maxDrawdownPct: Double? = null,
+    val timeToPeakSeconds: Int? = null
 )
 
 @Entity(

@@ -5,10 +5,11 @@ Android (Kotlin + Jetpack Compose) real-time Solana memecoin **signal** app.
 **Detect → Analyze → Score → Alert → Open Photon.**
 
 This app does **not** hold a wallet, private key, or seed phrase, and it never signs
-or broadcasts a Solana transaction. It only detects new tokens via PumpPortal,
-computes metrics/safety/a momentum score, raises BUY/SELL alerts, and — when you
-tap "OPEN IN PHOTON" — opens the official Photon web terminal so *you* can trade
-manually. There is no automatic trading anywhere in this codebase.
+or broadcasts a Solana transaction. It detects and analyzes market activity,
+raises BUY/SELL alerts, and — when you tap "OPEN IN PHOTON" — opens the official
+Photon web terminal so *you* can execute real trades manually. The Paper Terminal
+can simulate manual or optional automatic **paper-only** orders; it cannot execute
+on-chain trades.
 
 ---
 
@@ -33,10 +34,13 @@ Minimum SDK 26 (Android 8.0), target/compile SDK 34.
 1. Open the app → **Settings** → paste your PumpPortal API key (stored only in
    Android Keystore-backed `EncryptedSharedPreferences`; never logged, never sent
    anywhere except as part of the official PumpPortal WebSocket URL).
-2. Or, leave the key blank and turn on **Mock Mode** in Settings to see the whole
+2. Live token-trade streaming is a separate **metered** PumpPortal feature. It is
+   disabled by default; read the current cost notice in Settings before explicitly
+   enabling it. Discovery alone does not opt in to that stream.
+3. Or, leave the key blank and turn on **Mock Mode** in Settings to see the whole
    pipeline (fake tokens/trades/signals) without a live connection or spending any
    metered PumpPortal credits.
-3. Go to **Dashboard** and flip the Scanner switch. Background scanning uses a
+4. Go to **Dashboard** and flip the Scanner switch. Background scanning uses a
    foreground service with a persistent notification, per spec.
 
 ---
@@ -44,13 +48,9 @@ Minimum SDK 26 (Android 8.0), target/compile SDK 34.
 ## Important implementation notes / honesty about limitations
 
 - **PumpPortal field names**: `PumpPortalEventParser.kt` implements the documented
-  `subscribeNewToken` event stream as best understood from the public docs
-  (`https://pumpportal.fun/data-api/real-time/`).
-  I did not have live network access while generating this project, so **before
-  shipping, diff the field names in that parser against the current live docs** and
-  adjust if PumpPortal has changed anything. The parser is written defensively
-  (every field access is null-safe) specifically so a schema drift degrades
-  gracefully (fields become `UNKNOWN`) instead of crashing.
+  new-token and trade-event formats from the [official real-time docs](https://pumpportal.fun/data-api/real-time/).
+  The parser is null-safe so schema drift degrades gracefully (fields become
+  `UNKNOWN`) instead of crashing; verify the provider docs before shipping changes.
 - **Photon deep link**: there is no verified official token-specific deep-link URL
   format for Photon in the docs I could access. `PhotonLauncher.kt` therefore opens
   the official `https://photon-sol.tinyastro.io/` site and copies the token mint to
@@ -60,11 +60,9 @@ Minimum SDK 26 (Android 8.0), target/compile SDK 34.
   reliably expose these. They're wired as `UNKNOWN` end-to-end (DB, scoring, safety,
   UI) rather than faked — this is intentional per the spec's "never fabricate data"
   requirement, not an oversight. Wire in a real source later if you have one.
-- **Signal Performance Analytics** (spec #37, hypothetical outcome tracking) has the
-  data model (`SignalOutcomeEntity`/DAO) in place but the periodic price-recheck job
-  that populates it isn't scheduled yet — straightforward to add as another
-  WorkManager job that reads the latest price for open signals and calls
-  `signalOutcomeDao().insert(...)`.
+- **Signal Performance Analytics** records event-observed forward checkpoints.
+  Missing checkpoints remain absent; the app does not reuse a later quote as if it
+  occurred at the target time.
 - **Market cap formula**: not independently derived here — the app uses whatever
   market-cap figure (if any) PumpPortal's payload provides; it does not compute one
   from supply × price because reliable circulating-supply data isn't guaranteed
@@ -197,3 +195,15 @@ UI: Jetpack Compose, 5 tabs (Dashboard, Scanner, History, Status, Settings)
 ```
 
 No backend/VPS/cloud component — everything runs on-device (Phase 1, per spec).
+
+
+## Live Market State and Paper Terminal
+
+The live-data path now has one in-memory `LiveMarketStateRepository` shared by the scanner, candidate ranking, charts, portfolio marks, and Paper Terminal. Each quote carries its source and event/receive timestamps. `LIVE`, `STALE`, `DISCONNECTED`, and `UNKNOWN` are distinct states; DexScreener remains useful for enrichment/fallback, but a REST snapshot is never an executable paper quote and does not overwrite a PumpPortal trade quote. Periodic refresh only updates freshness—it never creates price points.
+
+- **Metered stream is explicit opt-in.** In Settings, `Enable metered live trade stream` is off by default and requires a configured PumpPortal key. The app warns that PumpPortal's current published rate is **0.01 SOL per 10,000 received trade events** and that the key must be linked to a wallet holding at least **0.02 SOL**. Discovery is separate. Replacing or removing the key disables the opt-in, clears the active token-trade subscriptions, and reconnects using the updated credential. Check the [official PumpPortal real-time documentation](https://pumpportal.fun/data-api/real-time/) and [FAQ](https://pumpportal.fun/FAQ/) for current terms; fees depend on actual provider events and are not a fixed app charge.
+- **Unknown is not zero.** Rolling 60-second trade counts/volume/pressure stay `UNKNOWN` until a full minute of stream coverage has elapsed after subscribe/reconnect. After that, a genuine zero count is shown as zero. Dex aggregates with a different or unspecified time bucket are not mapped into the 60-second counters.
+- **Candidate rank is informational only.** The independent live ranker uses PumpPortal trade-price observations, buy pressure, and persistence. A score waits for sufficient observed time coverage; it is not injected into or used to alter production `SignalEngine` decisions.
+- **Paper orders are simulated.** Manual and optional Auto Paper BUY/SELL require an opted-in stream, non-Mock mode, and a fresh PumpPortal trade quote (15-second freshness guard). REST snapshots, stale quotes, mock prices, and disconnected states are rejected. Fills record their source and `simulated` flag; fees/slippage are estimates, not exchange execution. Unrealized P/L and equity become `UNKNOWN` unless every open position has a fresh live trade quote. No wallet, signing key, or on-chain transaction is involved.
+- **Charts and outcomes use observations.** The chart draws stored market observations and paper/signal markers; it does not synthesize candles. Signal performance checkpoints are recorded from real trade observations within a bounded lateness window, including observed peak/drawdown metrics. An unobserved checkpoint remains missing rather than being filled from a later price.
+- **Verification.** Local unit tests cover source precedence, unknown-versus-zero windows, reconnect freshness, and the independent ranker. GitHub Actions runs `testDebugUnitTest` before assembling the debug APK.
