@@ -13,6 +13,11 @@ import com.solanasignal.app.data.room.SignalOutcomeRecorder
 import com.solanasignal.app.data.room.entities.*
 import com.solanasignal.app.data.settings.BatteryMode
 import com.solanasignal.app.data.settings.SettingsRepository
+import com.solanasignal.app.data.telemetry.DiagnosticSeverity
+import com.solanasignal.app.data.telemetry.DiagnosticJson
+import com.solanasignal.app.data.telemetry.MarketFeedProvider
+import com.solanasignal.app.data.telemetry.StructuredTelemetryLogger
+import com.solanasignal.app.data.telemetry.DiagnosticWindowAccumulator
 import com.solanasignal.app.domain.metrics.MetricsEngine
 import com.solanasignal.app.domain.mc.McObservation
 import com.solanasignal.app.domain.mc.McTrendPressureEngine
@@ -35,19 +40,19 @@ import org.json.JSONArray
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Wires the full pipeline: PumpPortal -> WebSocketManager -> Token Discovery / Trade
+ * Wires the full pipeline: selected market provider -> WebSocketManager -> token/trade
  * Streams -> Metrics -> Safety -> Momentum Score -> Signal Engine -> Android Alert
  * -> (user) -> Photon. This class does not execute trades.
  *
- * PumpPortal reports everything in SOL (marketCapSol, vSolInBondingCurve, solAmount,
- * tokenAmount). SolPriceProvider supplies a live SOL/USD rate so the app can show
+ * Providers report source-specific SOL/quote values. SolPriceProvider supplies a live SOL/USD rate so the app can show
  * the USD figures the spec's filters/UI are defined in; until a price has been
  * fetched at least once, USD fields stay null/UNKNOWN rather than being guessed.
  */
 class ScannerOrchestrator(
     private val context: Context,
     private val settings: SettingsRepository = SettingsRepository.get(context),
-    private val marketStates: LiveMarketStateRepository = LiveMarketStateRepository()
+    private val marketStates: LiveMarketStateRepository = LiveMarketStateRepository(),
+    private val telemetry: StructuredTelemetryLogger
 ) {
     private val db = AppDatabase.get(context)
     private val signalOutcomeRecorder = SignalOutcomeRecorder()
@@ -66,10 +71,12 @@ class ScannerOrchestrator(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var mockSource: MockEventSource? = null
-    private var webSocketManager: PumpPortalWebSocketManager? = null
+    private var webSocketManager: MarketWebSocketManager? = null
+    private var managerObservationJob: Job? = null
+    private val diagnosticWindows = DiagnosticWindowAccumulator()
+    val diagnosticWindowMetrics get() = diagnosticWindows
     private var dexScreenerJob: Job? = null
     private var marketStatusJob: Job? = null
-    private var tradeStreamSettingJob: Job? = null
 
     private val lastScoreByMint = ConcurrentHashMap<String, Int>()
     private val marketCapHistoryByMint = ConcurrentHashMap<String, MutableList<Pair<Long, Double>>>()
@@ -136,22 +143,31 @@ class ScannerOrchestrator(
         mockSource?.stop()
         webSocketManager?.stop()
         webSocketManager = null
+        managerObservationJob?.cancel(); managerObservationJob = null
         solPriceProvider.stop()
         dexScreenerJob?.cancel()
         evictionJob?.cancel()
         marketStatusJob?.cancel()
-        tradeStreamSettingJob?.cancel()
         _connectionState.value = ConnectionState.DISCONNECTED
         marketStates.setConnectionState(ConnectionState.DISCONNECTED)
+        diagnosticWindows.endCoverage(trackedMints.toList(), System.currentTimeMillis())
     }
 
-    fun refreshPumpPortalCredentials() {
-        val manager = webSocketManager ?: return
-        val activeMints = trackedMints.toList()
-        manager.unsubscribeTokenTrades(activeMints)
-        marketStates.endTradeTracking(activeMints)
-        activeMints.forEach(metricsEngine::dropToken)
-        manager.reconnectNow()
+    fun refreshMarketFeedConnection() {
+        if (!_running.value) return
+        val now = System.currentTimeMillis()
+        val activeMints = webSocketManager?.activeTokenMints.orEmpty()
+        diagnosticWindows.endCoverage(activeMints, now)
+        marketStates.endTradeTracking(activeMints, now)
+        managerObservationJob?.cancel(); managerObservationJob = null
+        webSocketManager?.stop()
+        webSocketManager = null
+        mockSource?.stop(); mockSource = null
+        if (settings.mockMode.value) startMock() else {
+            solPriceProvider.start(scope)
+            startLive()
+        }
+        startDexScreenerEnrichment()
     }
 
     /**
@@ -174,6 +190,7 @@ class ScannerOrchestrator(
                     mint !in openPaperMints && (last == null || last < staleCutoff)
                 }
                 if (stale.isEmpty()) continue
+                diagnosticWindows.endCoverage(stale, System.currentTimeMillis())
                 stale.forEach { mint ->
                     trackedMints.remove(mint)
                     lastActivityByMint.remove(mint)
@@ -191,8 +208,41 @@ class ScannerOrchestrator(
     private fun startMarketStatusTicker() {
         marketStatusJob?.cancel()
         marketStatusJob = scope.launch {
+            var previouslyStale = emptySet<String>()
             while (isActive) {
-                marketStates.refreshStatuses(System.currentTimeMillis())
+                val now = System.currentTimeMillis()
+                marketStates.refreshStatuses(now)
+                val source = if (settings.mockMode.value) "MOCK" else settings.marketFeedProvider.value.sourceId
+                val states = marketStates.states.value.values
+                val staleStates = states.filter { it.status == com.solanasignal.app.data.market.MarketDataStatus.STALE }.associateBy { it.mint }
+                val staleNow = staleStates.keys
+                (staleNow - previouslyStale).forEach { mint ->
+                    val state = staleStates[mint] ?: return@forEach
+                    telemetry.record(
+                        component = "DATA_QUALITY", eventType = "STALE_MARKET_DATA", severity = DiagnosticSeverity.WARN,
+                        message = "Market quote became stale", tokenAddress = mint, dataSource = state.priceSource.name,
+                        receivedAtMs = now,
+                        metadata = mapOf("status" to state.status.name, "priceUsd" to state.priceUsd,
+                            "priceSource" to state.priceSource.name, "lastEventAtMs" to state.lastTradeAtMs,
+                            "lastEventReceivedAtMs" to state.lastTradeReceivedAtMs,
+                            "staleAgeMs" to state.priceReceivedAtMs?.let { now - it })
+                    )
+                }
+                (previouslyStale - staleNow).forEach { mint ->
+                    telemetry.record(
+                        component = "DATA_QUALITY", eventType = "MARKET_DATA_FRESH", severity = DiagnosticSeverity.INFO,
+                        message = "Market quote freshness recovered", tokenAddress = mint, dataSource = source,
+                        receivedAtMs = now
+                    )
+                }
+                previouslyStale = staleNow
+                telemetry.updateRuntime(
+                    dataSource = source,
+                    connectionState = _connectionState.value.name,
+                    activeTokens = trackedMints.size,
+                    subscriptions = webSocketManager?.activeTokenSubscriptions ?: 0,
+                    staleTokens = states.count { it.status == com.solanasignal.app.data.market.MarketDataStatus.STALE }
+                )
                 delay(2_000L)
             }
         }
@@ -278,54 +328,81 @@ class ScannerOrchestrator(
     }
 
     private fun startLive() {
-        val manager = PumpPortalWebSocketManager(
-            getApiKey = { settings.getApiKeyOrNull() },
-            onEvent = { result, nowMs -> scope.launch { handleParseResult(result, nowMs) } },
-            onSystemEvent = { category, message -> scope.launch { logSystemEvent(category, message) } }
+        val provider = settings.marketFeedProvider.value
+        val manager = MarketWebSocketManager(
+            provider = provider,
+            getApiKey = { if (provider.requiresApiKey) settings.getApiKeyOrNull() else null },
+            onEvent = { source, result, nowMs -> scope.launch { handleParseResult(source, result, nowMs) } },
+            onSystemEvent = { source, category, message ->
+                logSystemEvent(category, message, source.sourceId)
+            }
         )
         webSocketManager = manager
         manager.start()
         manager.subscribeNewToken()
+        manager.subscribeMigrations()
 
-        // Forward the manager's live state into our stable, always-observable flows.
-        // (Trade counting is NOT forwarded from here - handleTrade() below increments
-        // _tradesReceivedCount itself, since that path also runs in Mock Mode and
-        // counts post-dedupe; forwarding the manager's own separate raw-message
-        // counter here as well would race two writers against the same flow.)
-        scope.launch {
+        managerObservationJob?.cancel()
+        managerObservationJob = scope.launch {
+            launch {
             var previousState: ConnectionState? = null
             manager.connectionState.collect { state ->
                 _connectionState.value = state
-                marketStates.setConnectionState(state)
-                if (state == ConnectionState.CONNECTED && previousState != ConnectionState.CONNECTED &&
-                    settings.liveTradeStreamingEnabled.value && settings.getApiKeyOrNull() != null && !settings.mockMode.value
-                ) {
-                    val activeMints = trackedMints.toList()
-                    activeMints.forEach(metricsEngine::dropToken)
+                val now = System.currentTimeMillis()
+                marketStates.setConnectionState(state, now)
+                if (previousState != state) telemetry.record(
+                    component = "MARKET_FEED", eventType = "CONNECTION_STATE",
+                    severity = if (state in setOf(ConnectionState.DEGRADED, ConnectionState.DISCONNECTED)) DiagnosticSeverity.WARN else DiagnosticSeverity.INFO,
+                    message = "Selected provider WebSocket state changed", dataSource = provider.sourceId,
+                    receivedAtMs = now,
+                    metadata = mapOf("previousState" to previousState?.name, "currentState" to state.name,
+                        "reconnectCount" to manager.reconnectCount.value)
+                )
+                if (state == ConnectionState.CONNECTED && previousState != ConnectionState.CONNECTED && liveStreamReady(provider)) {
+                    val requested = trackedMints.toList()
+                    manager.subscribeTokenTrades(requested)
+                    val active = manager.activeTokenMints
+                    marketStates.beginTradeTracking(active, now)
+                    diagnosticWindows.beginCoverage(active, now)
+                    active.forEach(metricsEngine::dropToken)
+                } else if (state != ConnectionState.CONNECTED && previousState == ConnectionState.CONNECTED) {
+                    val active = manager.activeTokenMints
+                    diagnosticWindows.endCoverage(active, now)
+                    marketStates.endTradeTracking(active, now)
+                    active.forEach(metricsEngine::dropToken)
                 }
                 previousState = state
             }
-        }
-        scope.launch { manager.reconnectCount.collect { _reconnectCount.value = it } }
-        scope.launch { manager.parserErrorCount.collect { _parserErrorCount.value = it } }
-        scope.launch { manager.eventsPerSecond.collect { _eventsPerSecond.value = it } }
-        tradeStreamSettingJob?.cancel()
-        tradeStreamSettingJob = scope.launch {
-            settings.liveTradeStreamingEnabled.collectLatest { enabled ->
-                val keyConfigured = settings.getApiKeyOrNull() != null
-                val activeMints = trackedMints.toList()
-                if (enabled && keyConfigured && !settings.mockMode.value) {
-                    marketStates.beginTradeTracking(activeMints)
-                    activeMints.forEach(metricsEngine::dropToken)
-                    manager.subscribeTokenTrades(activeMints)
-                } else {
-                    manager.unsubscribeTokenTrades(activeMints)
-                    marketStates.endTradeTracking(activeMints)
-                    activeMints.forEach(metricsEngine::dropToken)
+            }
+            launch { manager.reconnectCount.collect { _reconnectCount.value = it } }
+            launch { manager.parserErrorCount.collect { _parserErrorCount.value = it } }
+            launch { manager.eventsPerSecond.collect { _eventsPerSecond.value = it } }
+            launch {
+                settings.liveTradeStreamingEnabled.collectLatest { enabled ->
+                    val active = trackedMints.toList()
+                    if (enabled && liveStreamReady(provider)) {
+                        manager.subscribeTokenTrades(active)
+                        val subscribed = manager.activeTokenMints
+                        if (manager.connectionState.value == ConnectionState.CONNECTED) {
+                            marketStates.beginTradeTracking(subscribed)
+                            diagnosticWindows.beginCoverage(subscribed, System.currentTimeMillis())
+                        }
+                        subscribed.forEach(metricsEngine::dropToken)
+                    } else {
+                        val subscribed = manager.requestedTokenMints
+                        manager.unsubscribeTokenTrades(subscribed)
+                        marketStates.endTradeTracking(subscribed)
+                        diagnosticWindows.endCoverage(subscribed, System.currentTimeMillis())
+                        subscribed.forEach(metricsEngine::dropToken)
+                    }
+                    _trackedSubscriptionCount.value = manager.activeTokenSubscriptions
                 }
             }
         }
     }
+
+    private fun liveStreamReady(provider: MarketFeedProvider): Boolean =
+        settings.liveTradeStreamingEnabled.value && (!provider.requiresApiKey || settings.getApiKeyOrNull() != null) && !settings.mockMode.value
 
     private fun startMock() {
         // Mock mode fabricates a fake SOL price too, so USD figures aren't stuck on
@@ -345,22 +422,86 @@ class ScannerOrchestrator(
 
     private fun currentSolUsdPrice(): Double? = if (settings.mockMode.value) 180.0 else solPriceProvider.priceUsd.value
 
-    private suspend fun handleParseResult(result: ParseResult, nowMs: Long) {
+    private suspend fun handleParseResult(provider: MarketFeedProvider, result: ParseResult, nowMs: Long) {
         when (result) {
-            is ParseResult.TokenCreated -> handleTokenCreated(result.event)
-            is ParseResult.Migration -> handleMigration(result.event)
-            is ParseResult.Trade -> handleTrade(result.event)
-            is ParseResult.Unknown -> logSystemEvent(
-                "PARSER_UNKNOWN",
-                "Unrecognized message (likely a subscription ack or an error from PumpPortal - check content): " +
-                    result.raw.take(400)
-            )
-            is ParseResult.Malformed -> Unit // already counted/logged by the WS manager
+            is ParseResult.TokenCreated -> {
+                val event = result.event
+                val solUsd = currentSolUsdPrice()
+                telemetry.recordMarketEvent(provider.sourceId, "TOKEN_CREATED", event.mint, event.sourceTimestampEpochMs, nowMs,
+                    mapOf("name" to event.name, "symbol" to event.symbol, "creator" to event.creator, "uri" to event.uri,
+                        "marketCapSol" to event.marketCapSol, "vSolInBondingCurve" to event.vSolInBondingCurve,
+                        "vTokensInBondingCurve" to event.vTokensInBondingCurve,
+                        "marketCapUsd" to usd(event.marketCapSol, solUsd), "liquidityUsd" to usd(event.vSolInBondingCurve, solUsd),
+                        "solUsdRate" to solUsd), event.rawFrame)
+                val missing = buildList {
+                    if (event.marketCapSol == null) add("marketCapSol")
+                    if (event.vSolInBondingCurve == null) add("liquidityOrQuoteReserve")
+                    if (solUsd == null) add("solUsdRate")
+                }
+                if (missing.isNotEmpty()) telemetry.record(
+                    component = "DATA_QUALITY", eventType = "MISSING_MARKET_FIELDS", severity = DiagnosticSeverity.WARN,
+                    message = "Token discovery frame lacks optional market fields", tokenAddress = event.mint,
+                    dataSource = provider.sourceId, eventTimestampMs = event.sourceTimestampEpochMs, receivedAtMs = nowMs,
+                    metadata = mapOf("missingFields" to missing, "eventType" to "TOKEN_CREATED")
+                )
+                handleTokenCreated(event, provider)
+            }
+            is ParseResult.Migration -> {
+                val event = result.event
+                val replayFields = setOf("txType", "mint", "signature", "timestamp", "blockTime", "slot", "quoteMint",
+                    "pairQuoteMint", "solAmount", "quoteAmount", "tokenAmount", "marketCapSol", "marketCapQuote",
+                    "poolBaseReservesUi", "poolEffectiveQuoteReservesUi", "bondingCurveKey", "poolAddress")
+                telemetry.recordMarketEvent(provider.sourceId, "MIGRATION", event.mint, event.sourceTimestampEpochMs, nowMs,
+                    event.raw.filterKeys { it in replayFields }, event.rawFrame)
+                handleMigration(event)
+            }
+            is ParseResult.Trade -> {
+                val event = result.event
+                val amountUsd = usd(event.solAmount, currentSolUsdPrice())
+                val priceUsd = usd(event.priceSol, currentSolUsdPrice())
+                telemetry.recordMarketEvent(provider.sourceId, "TRADE", event.mint, event.sourceTimestampEpochMs, nowMs,
+                    mapOf("signature" to event.signature, "side" to event.side.name, "trader" to event.trader,
+                        "solAmount" to event.solAmount, "tokenAmount" to event.tokenAmount, "amountUsd" to amountUsd,
+                        "priceSol" to event.priceSol, "priceUsd" to priceUsd, "marketCapSol" to event.marketCapSol,
+                        "marketCapUsd" to usd(event.marketCapSol, currentSolUsdPrice()),
+                        "liquiditySol" to event.vSolInBondingCurve,
+                        "liquidityUsd" to usd(event.vSolInBondingCurve, currentSolUsdPrice()),
+                        "solUsdRate" to currentSolUsdPrice()), event.rawFrame)
+                handleTrade(event, provider)
+            }
+            is ParseResult.Control -> {
+                val obj = runCatching { org.json.JSONObject(result.raw) }.getOrNull()
+                val method = obj?.optString("method")
+                val keys = obj?.optJSONArray("keys")?.let { array ->
+                    (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+                }.orEmpty()
+                val controlEventType = if (result.controlType == "error") "PROVIDER_ERROR" else "PROVIDER_CONTROL"
+                telemetry.recordMarketEvent(provider.sourceId, controlEventType, null, null, nowMs,
+                    mapOf("controlType" to result.controlType, "method" to method, "keys" to keys,
+                        "code" to obj?.optString("code")), result.raw)
+                if (provider == MarketFeedProvider.PUMPDEV && result.controlType == "subscribed" && method == "subscribeTokenTrade") {
+                    val active = webSocketManager?.activeTokenMints.orEmpty()
+                    marketStates.beginTradeTracking(active, nowMs)
+                    diagnosticWindows.beginCoverage(active, nowMs)
+                    active.forEach(metricsEngine::dropToken)
+                    _trackedSubscriptionCount.value = webSocketManager?.activeTokenSubscriptions ?: 0
+                }
+            }
+            is ParseResult.Unknown -> {
+                telemetry.recordMarketEvent(provider.sourceId, "UNKNOWN_EVENT", null, null, nowMs,
+                    mapOf("providerType" to result.rawType, "rawFrameLength" to result.raw.length), result.raw)
+                logSystemEvent("PARSER_UNKNOWN", "Unrecognized ${provider.displayName} frame (type=${result.rawType ?: "unknown"})")
+            }
+            is ParseResult.Malformed -> {
+                telemetry.recordMarketEvent(provider.sourceId, "MALFORMED_EVENT", null, null, nowMs,
+                    mapOf("error" to result.error, "rawFrameLength" to result.raw.length), result.raw)
+            }
         }
     }
 
     // --- 9. TOKEN DISCOVERY -------------------------------------------------
-    private suspend fun handleTokenCreated(event: NormalizedTokenCreatedEvent) {
+    private suspend fun handleTokenCreated(event: NormalizedTokenCreatedEvent, provider: MarketFeedProvider? = null) {
+        val sourceId = if (settings.mockMode.value) "MOCK" else (provider ?: settings.marketFeedProvider.value).sourceId
         val solPrice = currentSolUsdPrice()
         val token = TokenEntity(
             mint = event.mint,
@@ -377,7 +518,7 @@ class ScannerOrchestrator(
             liquidityUsd = usd(event.vSolInBondingCurve, solPrice),
             lastPriceUsd = null,
             lifecycle = "NEW",
-            source = if (settings.mockMode.value) "mock" else "pumpportal"
+            source = sourceId.lowercase()
         )
         db.tokenDao().upsert(token)
         marketStates.updateDiscovery(
@@ -394,12 +535,18 @@ class ScannerOrchestrator(
         if (trackedMints.size < maxTracked) {
             trackedMints.add(event.mint)
             lastActivityByMint[event.mint] = event.receivedAtEpochMs
-            _trackedSubscriptionCount.value = trackedMints.size
-            if (settings.liveTradeStreamingEnabled.value && settings.getApiKeyOrNull() != null && !settings.mockMode.value) {
-                marketStates.beginTradeTracking(listOf(event.mint), event.receivedAtEpochMs)
+            _trackedSubscriptionCount.value = webSocketManager?.activeTokenSubscriptions ?: 0
+            val provider = webSocketManager?.provider ?: settings.marketFeedProvider.value
+            if (liveStreamReady(provider)) {
                 metricsEngine.dropToken(event.mint)
                 webSocketManager?.subscribeTokenTrades(listOf(event.mint))
+                val active = webSocketManager?.activeTokenMints.orEmpty()
+                if (event.mint in active && webSocketManager?.connectionState?.value == ConnectionState.CONNECTED) {
+                    marketStates.beginTradeTracking(listOf(event.mint), event.receivedAtEpochMs)
+                    diagnosticWindows.beginCoverage(listOf(event.mint), event.receivedAtEpochMs)
+                }
             }
+            _trackedSubscriptionCount.value = webSocketManager?.activeTokenSubscriptions ?: 0
         }
     }
 
@@ -409,15 +556,62 @@ class ScannerOrchestrator(
     }
 
     // --- 11. TRADE TRACKING + 12. DUPLICATE PROTECTION ----------------------
-    private suspend fun handleTrade(event: NormalizedTradeEvent) {
-        val dedupeKey = event.dedupeKey()
-        if (db.tradeDao().existsByDedupeKey(dedupeKey) > 0) return // never process the same trade twice
+    private suspend fun handleTrade(event: NormalizedTradeEvent, provider: MarketFeedProvider? = null) {
+        val source = if (settings.mockMode.value) "MOCK" else (provider?.sourceId ?: event.providerSource)
+        val dedupeKey = "$source:${event.dedupeKey()}"
+        if (db.tradeDao().existsByDedupeKey(dedupeKey) > 0) {
+            telemetry.record(
+                component = "DATA_QUALITY", eventType = "DUPLICATE_EVENT", severity = DiagnosticSeverity.INFO,
+                message = "Duplicate trade ignored by existing dedupe guard", tokenAddress = event.mint,
+                dataSource = source, eventTimestampMs = event.sourceTimestampEpochMs, receivedAtMs = System.currentTimeMillis(),
+                metadata = mapOf("signature" to event.signature, "side" to event.side.name)
+            )
+            return // preserve existing duplicate protection
+        }
+        if (provider == MarketFeedProvider.PUMPDEV && event.mint in webSocketManager?.requestedTokenMints.orEmpty()) {
+            webSocketManager?.confirmObservedTokenTrade(event.mint)
+            if (event.mint !in webSocketManager?.activeTokenMints.orEmpty()) {
+                marketStates.beginTradeTracking(listOf(event.mint), event.timestampEpochMs)
+                diagnosticWindows.beginCoverage(listOf(event.mint), event.timestampEpochMs)
+                metricsEngine.dropToken(event.mint)
+                _trackedSubscriptionCount.value = webSocketManager?.activeTokenSubscriptions ?: 0
+            }
+        }
         _tradesReceivedCount.value += 1
         lastActivityByMint[event.mint] = event.timestampEpochMs
 
         val solPrice = currentSolUsdPrice()
         val amountUsd = usd(event.solAmount, solPrice)
         val priceUsd = usd(event.priceSol, solPrice)
+        val missingFields = buildList {
+            if (event.priceSol == null) add("priceSol")
+            if (event.marketCapSol == null) add("marketCapSol")
+            if (event.solAmount == null) add("solAmount")
+            if (event.tokenAmount == null) add("tokenAmount")
+            if (event.vSolInBondingCurve == null) add("liquidityOrQuoteReserve")
+            if (solPrice == null) add("solUsdRate")
+            if (amountUsd == null && event.solAmount != null) add("amountUsd")
+            if (priceUsd == null && event.priceSol != null) add("priceUsd")
+        }
+        if (missingFields.isNotEmpty()) telemetry.record(
+            component = "DATA_QUALITY", eventType = "MISSING_MARKET_FIELDS", severity = DiagnosticSeverity.WARN,
+            message = "Trade event has unavailable market fields; values remain null", tokenAddress = event.mint,
+            dataSource = source, eventTimestampMs = event.sourceTimestampEpochMs, receivedAtMs = System.currentTimeMillis(),
+            metadata = mapOf("missingFields" to missingFields, "side" to event.side.name, "signature" to event.signature)
+        )
+        val invalidNumericFields = buildList {
+            if (event.solAmount?.let { !it.isFinite() || it < 0.0 } == true) add("solAmount")
+            if (event.tokenAmount?.let { !it.isFinite() || it < 0.0 } == true) add("tokenAmount")
+            if (event.marketCapSol?.let { !it.isFinite() || it < 0.0 } == true) add("marketCapSol")
+            if (event.vSolInBondingCurve?.let { !it.isFinite() || it < 0.0 } == true) add("vSolInBondingCurve")
+            if (event.vTokensInBondingCurve?.let { !it.isFinite() || it < 0.0 } == true) add("vTokensInBondingCurve")
+        }
+        if (invalidNumericFields.isNotEmpty()) telemetry.record(
+            component = "DATA_QUALITY", eventType = "INVALID_NUMERIC_VALUE", severity = DiagnosticSeverity.ERROR,
+            message = "Provider trade contains a negative or non-finite numeric value", tokenAddress = event.mint,
+            dataSource = source, eventTimestampMs = event.sourceTimestampEpochMs, receivedAtMs = System.currentTimeMillis(),
+            metadata = mapOf("invalidFields" to invalidNumericFields, "signature" to event.signature)
+        )
 
         db.tradeDao().insert(
             TradeEntity(
@@ -427,12 +621,37 @@ class ScannerOrchestrator(
                 trader = event.trader,
                 amountUsd = amountUsd,
                 priceUsd = priceUsd,
-                timestamp = event.timestampEpochMs
+                timestamp = event.timestampEpochMs,
+                source = source.lowercase()
             )
         )
         // MetricsEngine works in USD internally; feed it the converted amount/price.
         metricsEngine.record(event.mint, event.side, event.trader, amountUsd, priceUsd, event.timestampEpochMs)
 
+        val marketDataSource = when (source) {
+            "PUMPDEV" -> MarketDataSource.PUMPDEV_TRADE
+            "PUMPPORTAL" -> MarketDataSource.PUMPPORTAL_TRADE
+            else -> MarketDataSource.MOCK
+        }
+        if (!settings.mockMode.value && settings.liveTradeStreamingEnabled.value) {
+            val orderingIssue = diagnosticWindows.observe(
+                event.mint, event.timestampEpochMs, event.side, priceUsd,
+                usd(event.marketCapSol, solPrice), amountUsd, event.sourceTimestampEpochMs, event.trader
+            )
+            if (orderingIssue != null) telemetry.record(
+                component = "MARKET_FEED", eventType = orderingIssue, severity = DiagnosticSeverity.WARN,
+                message = "Provider event timestamp ordering/continuity issue", tokenAddress = event.mint,
+                dataSource = source, eventTimestampMs = event.sourceTimestampEpochMs, receivedAtMs = System.currentTimeMillis(),
+                metadata = mapOf("signature" to event.signature, "providerSourceTimestampMs" to event.sourceTimestampEpochMs)
+            )
+            telemetry.record(
+                component = "FEATURE_WINDOWS", eventType = "WINDOW_INPUTS", severity = DiagnosticSeverity.DEBUG,
+                message = "Diagnostic rolling windows after observed trade", tokenAddress = event.mint,
+                dataSource = source, eventTimestampMs = event.sourceTimestampEpochMs, receivedAtMs = System.currentTimeMillis(),
+                metadata = mapOf("side" to event.side.name, "amountUsd" to amountUsd, "priceUsd" to priceUsd,
+                    "windows" to diagnosticWindows.snapshot(event.mint, System.currentTimeMillis()).associate { it.windowSeconds.toString() to it.asMap() })
+            )
+        }
         db.tokenDao().getByMint(event.mint)?.let { token ->
             val currentMarketCapUsd = usd(event.marketCapSol, solPrice) ?: token.marketCapUsd
             val currentLiquidityUsd = usd(event.vSolInBondingCurve, solPrice) ?: token.liquidityUsd
@@ -451,7 +670,8 @@ class ScannerOrchestrator(
                     trader = event.trader,
                     signature = event.signature
                 ),
-                source = if (settings.mockMode.value) MarketDataSource.MOCK else MarketDataSource.PUMPPORTAL_TRADE
+                source = marketDataSource,
+                nowMs = System.currentTimeMillis()
             )
             db.tokenDao().upsert(
                 token.copy(
@@ -465,15 +685,44 @@ class ScannerOrchestrator(
             recordMarketCap(event.mint, event.timestampEpochMs, currentMarketCapUsd)
         }
 
+        marketStates.states.value[event.mint]?.let { state ->
+            val now = System.currentTimeMillis()
+            val fields = mapOf(
+                "priceUsd" to state.priceUsd, "marketCapUsd" to state.marketCapUsd,
+                "liquidityUsd" to state.liquidityUsd, "volumeUsd60s" to state.volumeUsd60s,
+                "buyCount60s" to state.buyCount60s, "sellCount60s" to state.sellCount60s,
+                "buyVolumeUsd60s" to state.buyVolumeUsd60s, "sellVolumeUsd60s" to state.sellVolumeUsd60s,
+                "tradeFrequency60s" to state.buyCount60s?.let { buys -> state.sellCount60s?.let { sells -> (buys + sells) / 60.0 } },
+                "lastEventAtMs" to state.lastTradeAtMs, "lastEventReceivedAtMs" to state.lastTradeReceivedAtMs
+            )
+            telemetry.record(
+                component = "LIVE_MARKET_STATE", eventType = "MARKET_STATE_SNAPSHOT", severity = DiagnosticSeverity.DEBUG,
+                message = "Observed market state after selected-provider trade", tokenAddress = event.mint,
+                dataSource = source, eventTimestampMs = event.sourceTimestampEpochMs, receivedAtMs = now,
+                metadata = mapOf(
+                    "status" to state.status.name, "priceSource" to state.priceSource.name,
+                    "priceUpdatedAtMs" to state.priceUpdatedAtMs, "priceReceivedAtMs" to state.priceReceivedAtMs,
+                    "freshnessAgeMs" to state.priceReceivedAtMs?.let { now - it },
+                    "tokenAgeSeconds" to db.tokenDao().getByMint(event.mint)?.let { (now - it.firstSeenAtEpochMs).coerceAtLeast(0L) / 1_000L },
+                    "eventSide" to event.side.name, "eventAmountUsd" to amountUsd,
+                    "eventPriceUsd" to priceUsd, "eventMarketCapUsd" to usd(event.marketCapSol, solPrice),
+                    "eventLiquidityUsd" to usd(event.vSolInBondingCurve, solPrice),
+                    "fields" to fields,
+                    "availableFields" to fields.filterValues { it != null }.keys,
+                    "missingFields" to (fields.filterValues { it == null }.keys)
+                )
+            )
+        }
+
         analyzeAndMaybeSignal(event.mint, event.timestampEpochMs, priceUsd)
         if (!settings.mockMode.value) {
-            signalOutcomeRecorder.onLiveTrade(db, event.mint, event.timestampEpochMs, priceUsd)
+            signalOutcomeRecorder.onLiveTrade(db, event.mint, event.timestampEpochMs, priceUsd, source.lowercase())
         }
     }
 
     /**
-     * The primary live analysis path: PumpPortal only discovers new mints;
-     * DexScreener supplies the market activity used for scoring and signals.
+     * The REST analysis path for snapshots when token-trade streaming is not opted in;
+     * the selected provider's normalized live trades use the separate direct path.
      */
     private suspend fun analyzeDexAndMaybeSignal(token: TokenEntity, info: DexScreenerPairInfo) {
         // In metered live-stream mode, tracked tokens reach the unchanged SignalEngine
@@ -537,6 +786,38 @@ class ScannerOrchestrator(
             config = settings.filterConfig.value,
             nowMs = nowMs,
             marketCapVelocityPct = marketCapVelocity
+        )
+        telemetry.record(
+            component = "SIGNAL_ENGINE", eventType = "SIGNAL_DECISION", severity = DiagnosticSeverity.DEBUG,
+            message = "Dex candidate evaluation", tokenAddress = token.mint, dataSource = "DEXSCREENER",
+            eventTimestampMs = nowMs, receivedAtMs = nowMs,
+            metadata = mapOf("signalType" to decision.type.name, "shouldNotify" to decision.shouldNotify,
+                "reasons" to decision.reasons, "score" to score.total, "ageSeconds" to ageSeconds,
+                "marketCapUsd" to effectiveMarketCapUsd, "buys5m" to info.buys5m, "sells5m" to info.sells5m,
+                "volume5mUsd" to info.volume5mUsd, "priceChange5mPct" to info.priceChange5mPct,
+                "marketCapVelocityPct" to marketCapVelocity,
+                "availableData" to listOfNotNull(
+                    "ageSeconds".takeIf { ageSeconds >= 0 }, "marketCapUsd".takeIf { effectiveMarketCapUsd != null },
+                    "liquidityUsd".takeIf { info.liquidityUsd != null }, "buys5m".takeIf { info.buys5m != null },
+                    "sells5m".takeIf { info.sells5m != null }, "volume5mUsd".takeIf { info.volume5mUsd != null },
+                    "priceChange5mPct".takeIf { info.priceChange5mPct != null }
+                ),
+                "missingData" to listOfNotNull(
+                    "marketCapUsd".takeIf { effectiveMarketCapUsd == null }, "liquidityUsd".takeIf { info.liquidityUsd == null },
+                    "buys5m".takeIf { info.buys5m == null }, "sells5m".takeIf { info.sells5m == null },
+                    "volume5mUsd".takeIf { info.volume5mUsd == null }, "priceChange5mPct".takeIf { info.priceChange5mPct == null }
+                ),
+                "scoringComponents" to score.components.map { mapOf("name" to it.label, "value" to it.value) },
+                "safety" to mapOf("overall" to safety.overall.name, "checks" to safety.checks.map {
+                    mapOf("check" to it.check, "status" to it.status.name, "reason" to it.reason, "source" to it.source)
+                }),
+                "filterConfig" to mapOf("maxTokenAgeSeconds" to settings.filterConfig.value.maxTokenAgeSeconds,
+                    "minMarketCapUsd" to settings.filterConfig.value.minMarketCapUsd,
+                    "requireBuyersGtSellers" to settings.filterConfig.value.requireBuyersGtSellers,
+                    "requireBuyVolumeGtSellVolume" to settings.filterConfig.value.requireBuyVolumeGtSellVolume,
+                    "minScoreForBuy" to settings.filterConfig.value.minScoreForBuy,
+                    "watchScoreFloor" to settings.filterConfig.value.watchScoreFloor)
+            )
         )
         // AI is advisory and runs off the real-time path. Deterministic signals
         // must not wait for a provider response or fail when AI is unavailable.
@@ -719,7 +1000,8 @@ class ScannerOrchestrator(
                 marketCapUsd = token.marketCapUsd, liquidityUsd = token.liquidityUsd,
                 buyVolumeUsd = m5.buyVolumeUsd, sellVolumeUsd = m5.sellVolumeUsd,
                 buyers = m5.uniqueBuyers, sellers = m5.uniqueSellers,
-                source = if (settings.mockMode.value) "mock" else "pumpportal"
+                source = if (settings.mockMode.value) "mock" else
+                    (marketStates.states.value[mint]?.priceSource?.name?.lowercase() ?: settings.marketFeedProvider.value.sourceId.lowercase())
             )
         )
         db.featureSnapshotDao().insertSnapshot(
@@ -835,6 +1117,41 @@ class ScannerOrchestrator(
             metrics5m = m5, score = score, safety = safety, config = config, nowMs = nowMs,
             marketCapVelocityPct = mcVelocityPctPerMinute
         )
+        telemetry.record(
+            component = "SIGNAL_ENGINE", eventType = "SIGNAL_DECISION", severity = DiagnosticSeverity.DEBUG,
+            message = "Live trade evaluation", tokenAddress = mint,
+            dataSource = if (settings.mockMode.value) "MOCK" else settings.marketFeedProvider.value.sourceId,
+            eventTimestampMs = nowMs, receivedAtMs = System.currentTimeMillis(),
+            metadata = mapOf("signalType" to buyDecision.type.name, "shouldNotify" to buyDecision.shouldNotify,
+                "reasons" to buyDecision.reasons, "score" to score.total, "buyerPressurePct" to m5.buyerVelocity,
+                "priceChangePct" to m5.priceChangePct, "volumeVelocity" to m5.volumeVelocity,
+                "buyVolumeUsd" to m5.buyVolumeUsd, "sellVolumeUsd" to m5.sellVolumeUsd,
+                "marketCapVelocityPct" to mcVelocityPctPerMinute, "riskScore" to manipulationRisk.score,
+                "dataConfidence" to evidence.dataConfidence, "ageSeconds" to ageSeconds,
+                "marketCapUsd" to token.marketCapUsd, "liquidityUsd" to token.liquidityUsd,
+                "metrics5m" to windowMetricsMap(m5), "metrics1m" to windowMetricsMap(m1),
+                "scoringComponents" to score.components.map { mapOf("name" to it.label, "value" to it.value) },
+                "availableData" to listOfNotNull(
+                    "marketCapUsd".takeIf { token.marketCapUsd != null }, "liquidityUsd".takeIf { token.liquidityUsd != null },
+                    "latestPriceUsd5m".takeIf { m5.latestPriceUsd != null }, "priceChangePct5m".takeIf { m5.priceChangePct != null },
+                    "volumeVelocity5m".takeIf { m5.volumeVelocity != null }, "buyerVelocity5m".takeIf { m5.buyerVelocity != null },
+                    "sellerVelocity5m".takeIf { m5.sellerVelocity != null }, "marketCapVelocityPct".takeIf { mcVelocityPctPerMinute != null }
+                ),
+                "missingData" to listOfNotNull(
+                    "marketCapUsd".takeIf { token.marketCapUsd == null }, "liquidityUsd".takeIf { token.liquidityUsd == null },
+                    "latestPriceUsd5m".takeIf { m5.latestPriceUsd == null }, "priceChangePct5m".takeIf { m5.priceChangePct == null },
+                    "volumeVelocity5m".takeIf { m5.volumeVelocity == null }, "buyerVelocity5m".takeIf { m5.buyerVelocity == null },
+                    "sellerVelocity5m".takeIf { m5.sellerVelocity == null }, "marketCapVelocityPct".takeIf { mcVelocityPctPerMinute == null }
+                ),
+                "safety" to mapOf("overall" to safety.overall.name, "checks" to safety.checks.map {
+                    mapOf("check" to it.check, "status" to it.status.name, "reason" to it.reason, "source" to it.source)
+                }),
+                "filterConfig" to mapOf("maxTokenAgeSeconds" to config.maxTokenAgeSeconds,
+                    "minMarketCapUsd" to config.minMarketCapUsd, "requireBuyersGtSellers" to config.requireBuyersGtSellers,
+                    "requireBuyVolumeGtSellVolume" to config.requireBuyVolumeGtSellVolume,
+                    "minScoreForBuy" to config.minScoreForBuy, "watchScoreFloor" to config.watchScoreFloor)
+            )
+        )
 
         if (buyDecision.shouldNotify) {
             persistAndNotify(analyzedToken, buyDecision.type, score.total, buyDecision.reasons, m5)
@@ -847,18 +1164,47 @@ class ScannerOrchestrator(
                 mint = mint, previousScore = prevScore, currentScore = score.total,
                 metrics5m = m5, safety = safety, config = config, nowMs = nowMs
             )
+            telemetry.record(
+                component = "SIGNAL_ENGINE", eventType = "SELL_TRIGGER_DECISION", severity = DiagnosticSeverity.DEBUG,
+                message = if (sellDecision == null) "No sell-trigger decision" else "Sell-trigger evaluation",
+                tokenAddress = mint, dataSource = if (settings.mockMode.value) "MOCK" else settings.marketFeedProvider.value.sourceId,
+                eventTimestampMs = nowMs, receivedAtMs = System.currentTimeMillis(),
+                metadata = mapOf("previousScore" to prevScore, "currentScore" to score.total,
+                    "shouldNotify" to sellDecision?.shouldNotify, "reasons" to sellDecision?.reasons)
+            )
             if (sellDecision != null && sellDecision.shouldNotify) {
                 persistAndNotify(analyzedToken, SignalType.SELL, score.total, sellDecision.reasons, m5)
             }
         }
     }
 
+    private fun windowMetricsMap(metrics: com.solanasignal.app.domain.metrics.WindowMetrics): Map<String, Any?> = mapOf(
+        "windowSeconds" to metrics.windowSeconds,
+        "totalTrades" to metrics.totalTrades,
+        "buys" to metrics.buys,
+        "sells" to metrics.sells,
+        "uniqueBuyers" to metrics.uniqueBuyers,
+        "uniqueSellers" to metrics.uniqueSellers,
+        "buyVolumeUsd" to metrics.buyVolumeUsd,
+        "sellVolumeUsd" to metrics.sellVolumeUsd,
+        "avgBuySizeUsd" to metrics.avgBuySizeUsd,
+        "avgSellSizeUsd" to metrics.avgSellSizeUsd,
+        "largestBuyUsd" to metrics.largestBuyUsd,
+        "largestSellUsd" to metrics.largestSellUsd,
+        "latestPriceUsd" to metrics.latestPriceUsd,
+        "priceChangePct" to metrics.priceChangePct,
+        "volumeVelocity" to metrics.volumeVelocity,
+        "buyerVelocity" to metrics.buyerVelocity,
+        "sellerVelocity" to metrics.sellerVelocity
+    )
+
     private suspend fun persistAndNotify(
         token: TokenEntity, type: SignalType, score: Int, reasons: List<String>, m5: com.solanasignal.app.domain.metrics.WindowMetrics
     ) {
+        val signalTimestamp = System.currentTimeMillis()
         val id = db.signalDao().insert(
             SignalEntity(
-                mint = token.mint, symbol = token.symbol, timestamp = System.currentTimeMillis(),
+                mint = token.mint, symbol = token.symbol, timestamp = signalTimestamp,
                 signalType = type.name, score = score,
                 reasonsJson = JSONArray(reasons).toString(),
                 marketCapUsd = token.marketCapUsd, liquidityUsd = token.liquidityUsd,
@@ -871,6 +1217,17 @@ class ScannerOrchestrator(
                 dataQualityScore = token.dataQualityScore
             )
         )
+        telemetry.record(
+            component = "SIGNAL_ENGINE", eventType = "SIGNAL_EMITTED", severity = DiagnosticSeverity.INFO,
+            message = "${type.name} signal persisted", tokenAddress = token.mint,
+            dataSource = if (settings.mockMode.value) "MOCK" else settings.marketFeedProvider.value.sourceId,
+            eventTimestampMs = signalTimestamp, receivedAtMs = signalTimestamp,
+            metadata = mapOf("signalId" to id, "signalType" to type.name, "score" to score,
+                "reasons" to reasons, "marketCapUsd" to token.marketCapUsd, "liquidityUsd" to token.liquidityUsd,
+                "buyers5m" to m5.uniqueBuyers, "sellers5m" to m5.uniqueSellers,
+                "buyVolume5mUsd" to m5.buyVolumeUsd, "sellVolume5mUsd" to m5.sellVolumeUsd,
+                "priceUsd" to m5.latestPriceUsd)
+        )
         if (type == SignalType.BUY || type == SignalType.SELL) {
             NotificationHelper.showSignalNotification(
                 context, id, token.mint, token.poolAddress, token.symbol ?: token.mint.take(6), type, score, m5, reasons
@@ -878,8 +1235,26 @@ class ScannerOrchestrator(
         }
     }
 
-    private suspend fun logSystemEvent(category: String, message: String) {
-        db.systemEventDao().insert(SystemEventEntity(timestamp = System.currentTimeMillis(), category = category, message = message))
+    private fun logSystemEvent(category: String, message: String, source: String? = null) {
+        val now = System.currentTimeMillis()
+        val safeMessage = DiagnosticJson.redactText(message).take(1_000)
+        val severity = when {
+            category in setOf("STARTUP_ERROR", "PARSER_ERROR", "SUBSCRIPTION_ERROR") -> DiagnosticSeverity.ERROR
+            category in setOf("PROVIDER_ERROR", "SUBSCRIPTION_LIMIT", "SUBSCRIPTION_REJECTED", "STREAM_QUIET", "PARSER_UNKNOWN") -> DiagnosticSeverity.WARN
+            category == "UPSTREAM_STATUS" && safeMessage.contains("connected=false") -> DiagnosticSeverity.WARN
+            else -> DiagnosticSeverity.INFO
+        }
+        telemetry.record(
+            component = if (category in setOf("PARSER_ERROR", "PROVIDER_ERROR", "SUBSCRIPTION_ERROR", "SUBSCRIPTION_LIMIT", "SUBSCRIPTION_REJECTED", "STREAM_QUIET", "CONNECTION", "RECONNECT", "SUBSCRIPTION", "SUBSCRIPTION_ACK", "UPSTREAM_STATUS")) "MARKET_FEED" else "SYSTEM",
+            eventType = category, severity = severity, message = safeMessage,
+            dataSource = source ?: if (settings.mockMode.value) "MOCK" else settings.marketFeedProvider.value.sourceId,
+            receivedAtMs = now, metadata = mapOf("category" to category)
+        )
+        scope.launch {
+            runCatching {
+                db.systemEventDao().insert(SystemEventEntity(timestamp = now, category = category, message = safeMessage))
+            }
+        }
     }
 
     private fun maxTrackedForBatteryMode(): Int = when (settings.batteryMode.value) {

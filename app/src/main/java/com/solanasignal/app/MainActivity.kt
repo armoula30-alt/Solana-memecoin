@@ -30,6 +30,7 @@ import com.solanasignal.app.ui.scanner.LiveScannerScreen
 import com.solanasignal.app.ui.settings.SettingsScreen
 import com.solanasignal.app.ui.status.SystemStatusScreen
 import com.solanasignal.app.ui.paper.PaperTerminalScreen
+import com.solanasignal.app.ui.diagnostics.DiagnosticsScreen
 import com.solanasignal.app.ui.theme.SolanaSignalTheme
 
 sealed class Screen(val route: String, val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
@@ -126,7 +127,8 @@ fun AppScaffold(vm: AppViewModel, pendingNavigateMint: MutableState<String?> = m
             composable(Screen.Terminal.route) { PaperTerminalScreen(vm) }
             composable(Screen.History.route) { SignalHistoryScreen(vm) }
             composable(Screen.Status.route) { SystemStatusScreen(vm) }
-            composable(Screen.Settings.route) { SettingsScreen(vm) }
+            composable(Screen.Settings.route) { SettingsScreen(vm, onOpenDiagnostics = { navController.navigate("diagnostics") }) }
+            composable("diagnostics") { DiagnosticsScreen(vm, onBack = { navController.popBackStack() }) }
             composable("detail/{mint}") { backStackEntry ->
                 val mint = backStackEntry.arguments?.getString("mint") ?: ""
                 TokenDetailScreen(vm, mint)

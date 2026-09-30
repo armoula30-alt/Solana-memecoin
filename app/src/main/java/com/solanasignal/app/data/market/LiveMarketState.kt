@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /** The origin is kept with every quote so simulated execution can reject REST snapshots. */
-enum class MarketDataSource { PUMPPORTAL_TRADE, DEXSCREENER, MOCK, UNKNOWN }
+enum class MarketDataSource { PUMPPORTAL_TRADE, PUMPDEV_TRADE, DEXSCREENER, MOCK, UNKNOWN }
 enum class MarketDataStatus { LIVE, STALE, DISCONNECTED, UNKNOWN }
 
 data class MarketPoint(
@@ -57,7 +57,7 @@ data class LiveMarketState(
 ) {
     fun isFreshTradeQuote(nowMs: Long, staleAfterMs: Long): Boolean =
         status == MarketDataStatus.LIVE &&
-            priceSource == MarketDataSource.PUMPPORTAL_TRADE &&
+            priceSource in setOf(MarketDataSource.PUMPPORTAL_TRADE, MarketDataSource.PUMPDEV_TRADE) &&
             priceUsd != null && priceUsd > 0.0 &&
             priceUpdatedAtMs != null && nowMs - priceUpdatedAtMs in 0..staleAfterMs
             && priceReceivedAtMs != null && nowMs - priceReceivedAtMs in 0..staleAfterMs
@@ -111,7 +111,7 @@ class LiveMarketStateRepository(
         source: MarketDataSource = MarketDataSource.DEXSCREENER
     ) = synchronized(lock) {
         val old = _states.value[mint] ?: LiveMarketState(mint)
-        val useRestPrice = old.priceSource != MarketDataSource.PUMPPORTAL_TRADE || old.priceUsd == null
+        val useRestPrice = old.priceSource !in setOf(MarketDataSource.PUMPPORTAL_TRADE, MarketDataSource.PUMPDEV_TRADE) || old.priceUsd == null
         val validPrice = priceUsd?.takeIf { it.isFinite() && it > 0.0 }
         val point = if (validPrice != null || marketCapUsd != null) {
             MarketPoint(nowMs, validPrice, marketCapUsd, liquidityUsd, volumeUsd, source)
@@ -230,7 +230,8 @@ class LiveMarketStateRepository(
             socketConnectedAtMs = nowMs
             _states.value = _states.value.mapValues { (_, old) ->
                 old.copy(
-                    tradeTrackingStartedAtMs = nowMs,
+                    // Discovery connection alone is not consent/subscription for trade coverage.
+                    tradeTrackingStartedAtMs = null,
                     buyCount60s = null,
                     sellCount60s = null,
                     buyVolumeUsd60s = null,

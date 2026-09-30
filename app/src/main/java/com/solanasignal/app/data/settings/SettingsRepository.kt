@@ -7,6 +7,7 @@ import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import com.solanasignal.app.data.telemetry.MarketFeedProvider
 
 enum class BatteryMode { PERFORMANCE, BALANCED, BATTERY_SAVER }
 enum class RetentionPolicy(val days: Int?) { SEVEN(7), THIRTY(30), NINETY(90), UNLIMITED(null) }
@@ -88,6 +89,15 @@ class SettingsRepository private constructor(context: Context) {
         securePrefs.getBoolean(KEY_LIVE_TRADE_STREAMING, false)
     )
     val liveTradeStreamingEnabled: StateFlow<Boolean> = _liveTradeStreamingEnabled.asStateFlow()
+
+    private val _marketFeedProvider = MutableStateFlow(
+        runCatching { MarketFeedProvider.valueOf(securePrefs.getString(KEY_MARKET_FEED_PROVIDER, MarketFeedProvider.PUMPPORTAL.name) ?: MarketFeedProvider.PUMPPORTAL.name) }
+            .getOrDefault(MarketFeedProvider.PUMPPORTAL)
+    )
+    val marketFeedProvider: StateFlow<MarketFeedProvider> = _marketFeedProvider.asStateFlow()
+
+    private val _traceLoggingEnabled = MutableStateFlow(securePrefs.getBoolean(KEY_TRACE_LOGGING, false))
+    val traceLoggingEnabled: StateFlow<Boolean> = _traceLoggingEnabled.asStateFlow()
 
     private val _retentionPolicy = MutableStateFlow(RetentionPolicy.THIRTY)
     val retentionPolicy: StateFlow<RetentionPolicy> = _retentionPolicy.asStateFlow()
@@ -181,9 +191,21 @@ class SettingsRepository private constructor(context: Context) {
         if (enabled) setLiveTradeStreamingEnabled(false)
     }
     fun setLiveTradeStreamingEnabled(enabled: Boolean) {
-        val allowed = enabled && hasApiKey() && !_mockMode.value
+        val credentialsReady = !_marketFeedProvider.value.requiresApiKey || hasApiKey()
+        val allowed = enabled && credentialsReady && !_mockMode.value
         securePrefs.edit().putBoolean(KEY_LIVE_TRADE_STREAMING, allowed).apply()
         _liveTradeStreamingEnabled.value = allowed
+    }
+    fun setMarketFeedProvider(provider: MarketFeedProvider) {
+        if (_marketFeedProvider.value == provider) return
+        // A provider change invalidates the previous explicit metered-stream consent.
+        setLiveTradeStreamingEnabled(false)
+        securePrefs.edit().putString(KEY_MARKET_FEED_PROVIDER, provider.name).apply()
+        _marketFeedProvider.value = provider
+    }
+    fun setTraceLoggingEnabled(enabled: Boolean) {
+        securePrefs.edit().putBoolean(KEY_TRACE_LOGGING, enabled).apply()
+        _traceLoggingEnabled.value = enabled
     }
     fun setRetentionPolicy(policy: RetentionPolicy) { _retentionPolicy.value = policy }
 
@@ -243,6 +265,8 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_ENGINE_SPIKE_SHARE = "engine_anti_spike_largest_share"
         private const val KEY_ENGINE_SPIKE_BUYERS = "engine_anti_spike_min_buyers"
         private const val KEY_LIVE_TRADE_STREAMING = "live_trade_streaming_enabled"
+        private const val KEY_MARKET_FEED_PROVIDER = "market_feed_provider"
+        private const val KEY_TRACE_LOGGING = "diagnostic_trace_logging_enabled"
         const val DEFAULT_CODECRAFT_MODEL = "claude-opus-4.8"
 
         @Volatile private var instance: SettingsRepository? = null

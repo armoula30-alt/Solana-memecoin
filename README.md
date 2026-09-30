@@ -104,7 +104,7 @@ Minimum SDK 26 (Android 8.0), target/compile SDK 34.
 Added `DexScreenerClient` (`data/dexscreener/`) as a second, free, keyless data
 source layered on top of PumpPortal:
 
-- **What it fixes**: PumpPortal only reports SOL-denominated figures, so MC/Liquidity
+- **What it fixed at v1.2**: PumpPortal then only reported SOL-denominated figures, so MC/Liquidity
   in the app were always our own SOL→USD conversion (via SolPriceProvider). Now,
   every ~20 seconds, `ScannerOrchestrator` batch-queries
   `https://api.dexscreener.com/latest/dex/tokens/{mint1},{mint2},...` (up to 30
@@ -181,17 +181,18 @@ in Photon, no auto-trading" ask:
 ## Architecture
 
 ```
-PumpPortalWebSocketManager (data/pumpportal)
-        -> PumpPortalEventParser -> Normalized*Event
+MarketWebSocketManager (data/pumpportal; one selected provider)
+        -> PumpPortalEventParser or PumpDevEventParser -> Normalized*Event
         -> ScannerOrchestrator (domain/scanner)
                -> MetricsEngine (domain/metrics)      rolling 30s/1m/3m/5m windows
                -> SafetyEngine (domain/safety)         PASS/WARN/FAIL/UNKNOWN checks
                -> ScoringEngine (domain/scoring)       explainable 0-100 score
                -> SignalEngine (domain/signals)        hard filters + cooldown/dedupe
-        -> Room (data/room)                            tokens/trades/metrics/scores/signals
+        -> Room (data/room)                            tokens/trades/metrics/scores/signals/diagnostics
         -> NotificationHelper                          BUY/SELL/SAFETY/SYSTEM channels
         -> PhotonLauncher                               opens Photon, never trades
-UI: Jetpack Compose, 5 tabs (Dashboard, Scanner, History, Status, Settings)
+UI: Jetpack Compose, 6 tabs (Dashboard, Scanner, Paper Terminal, History, Status, Settings)
+Developer Diagnostics is a separate route opened from Settings.
 ```
 
 No backend/VPS/cloud component — everything runs on-device (Phase 1, per spec).
@@ -199,11 +200,12 @@ No backend/VPS/cloud component — everything runs on-device (Phase 1, per spec)
 
 ## Live Market State and Paper Terminal
 
-The live-data path now has one in-memory `LiveMarketStateRepository` shared by the scanner, candidate ranking, charts, portfolio marks, and Paper Terminal. Each quote carries its source and event/receive timestamps. `LIVE`, `STALE`, `DISCONNECTED`, and `UNKNOWN` are distinct states; DexScreener remains useful for enrichment/fallback, but a REST snapshot is never an executable paper quote and does not overwrite a PumpPortal trade quote. Periodic refresh only updates freshness—it never creates price points.
+The live-data path uses one in-memory `LiveMarketStateRepository` shared by the scanner, candidate ranking, charts, portfolio marks, and Paper Terminal. The provider selector chooses exactly one source: PumpPortal or PumpDev. Every quote carries provider identity and event/receive timestamps. `LIVE`, `STALE`, `DISCONNECTED`, and `UNKNOWN` remain distinct; DexScreener REST data is enrichment/fallback only, never an executable quote and never a synthetic trade observation. Periodic refresh updates freshness only.
 
-- **Metered stream is explicit opt-in.** In Settings, `Enable metered live trade stream` is off by default and requires a configured PumpPortal key. The app warns that PumpPortal's current published rate is **0.01 SOL per 10,000 received trade events** and that the key must be linked to a wallet holding at least **0.02 SOL**. Discovery is separate. Replacing or removing the key disables the opt-in, clears the active token-trade subscriptions, and reconnects using the updated credential. Check the [official PumpPortal real-time documentation](https://pumpportal.fun/data-api/real-time/) and [FAQ](https://pumpportal.fun/FAQ/) for current terms; fees depend on actual provider events and are not a fixed app charge.
-- **Unknown is not zero.** Rolling 60-second trade counts/volume/pressure stay `UNKNOWN` until a full minute of stream coverage has elapsed after subscribe/reconnect. After that, a genuine zero count is shown as zero. Dex aggregates with a different or unspecified time bucket are not mapped into the 60-second counters.
-- **Candidate rank is informational only.** The independent live ranker uses PumpPortal trade-price observations, buy pressure, and persistence. A score waits for sufficient observed time coverage; it is not injected into or used to alter production `SignalEngine` decisions.
-- **Paper orders are simulated.** Manual and optional Auto Paper BUY/SELL require an opted-in stream, non-Mock mode, and a fresh PumpPortal trade quote (15-second freshness guard). REST snapshots, stale quotes, mock prices, and disconnected states are rejected. Fills record their source and `simulated` flag; fees/slippage are estimates, not exchange execution. Unrealized P/L and equity become `UNKNOWN` unless every open position has a fresh live trade quote. No wallet, signing key, or on-chain transaction is involved.
-- **Charts and outcomes use observations.** The chart draws stored market observations and paper/signal markers; it does not synthesize candles. Signal performance checkpoints are recorded from real trade observations within a bounded lateness window, including observed peak/drawdown metrics. An unobserved checkpoint remains missing rather than being filled from a later price.
-- **Verification.** Local unit tests cover source precedence, unknown-versus-zero windows, reconnect freshness, and the independent ranker. GitHub Actions runs `testDebugUnitTest` before assembling the debug APK.
+- **Provider choice and cost gates.** PumpPortal discovery is separate from its explicitly opted-in metered trade stream. The app currently displays PumpPortal's published **0.01 SOL per 10,000 received trade events** and minimum **0.02 SOL** wallet-funding requirement; replacing/removing its key clears opt-in and reconnects. PumpDev connects anonymously to `wss://pumpdev.io/ws`; its current documentation states a free anonymous tier of **5 token subscriptions and 10,000 trade messages/month**, with new-token discovery unmetered. PumpDev's per-token ACK keys are used as the confirmed subscription set; rejected or unconfirmed keys do not start coverage. Provider limits/terms can change—see [PumpPortal real-time docs](https://pumpportal.fun/data-api/real-time/), its [FAQ](https://pumpportal.fun/FAQ/), and [PumpDev Data API docs](https://pumpdev.io/data-api). The app does not send the PumpPortal key to PumpDev.
+- **Quote currency is explicit.** PumpDev's SOL-denominated curve and PumpSwap trades are normalized only when the frame identifies wrapped SOL. Non-SOL pairs with unresolved quote context retain `UNKNOWN` price/amount rather than assuming decimals or treating USDC/another quote as SOL. `complete` and `create_pool` are recorded as migration events; the PumpDev token subscription is lifecycle-wide according to its API documentation.
+- **Unknown is not zero.** Diagnostic rolling windows are 5s, 10s, 15s, 30s, 60s, 2m, and 5m. Counts, unique wallets, buy pressure, notional volume, persistence, trade frequency, price/market-cap velocity, and acceleration remain `UNKNOWN` until that individual window has continuous selected-provider coverage and the necessary fields. After verified quiet coverage, counts can be genuine zero; missing trade sizes remain unknown. Socket/upstream disconnects and bounded-history loss invalidate only affected windows. Provider timestamp anomalies are logged separately; rolling windows use local receive time and never pretend a missing source timestamp is known. Dex aggregate buckets are not relabeled as rolling windows. A quiet feed is reported separately and does not by itself mean the WebSocket disconnected.
+- **Developer diagnostics are opt-in and local.** Settings opens a diagnostics view with provider/runtime status, events/s, source-to-receive latency percentiles, malformed/unknown/error counters, logger drops/DB failures, recent structured events, and per-token feature windows. Signal decisions/reason codes and data-quality outcomes are recorded as instrumentation; the production `SignalEngine` formulas, thresholds, inputs, and trade decisions are not altered by diagnostics or candidate ranking. Logs are stored on-device for 7 days and capped at 25,000 events. TRACE frames are off by default, redacted, and enabled explicitly. Export is JSON through Android's Storage Access Framework; no backend upload is performed.
+- **Paper orders remain simulated.** Manual and optional Auto Paper BUY/SELL require explicit live-stream opt-in, non-Mock mode, an active selected-provider quote, and a 15-second freshness guard. REST snapshots, stale quotes, mock prices, disconnected states, and unresolved non-SOL quotes are rejected. Fills record provider, simulation flag, fees, slippage, signal linkage, and sell holding duration; fee/slippage are estimates, not exchange execution. Unrealized P/L/equity stay `UNKNOWN` unless every open position has a fresh selected-provider quote. No wallet, signing key, or on-chain transaction is involved.
+- **Charts and outcomes use observations.** The chart draws actual stored observations and paper/signal markers; it does not synthesize candles. Signal performance checkpoints and observed peak/drawdown metrics use real PumpPortal/PumpDev trade observations within a bounded lateness window. An unobserved checkpoint remains missing rather than being backfilled from a later price.
+- **Verification.** Unit tests cover JSON secret redaction, source provenance, unknown-versus-zero/coverage behavior, reconnect freshness, and the independent ranker. GitHub Actions runs `testDebugUnitTest` before assembling the debug APK.

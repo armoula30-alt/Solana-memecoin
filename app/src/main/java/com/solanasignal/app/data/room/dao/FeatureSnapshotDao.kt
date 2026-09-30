@@ -18,8 +18,11 @@ interface FeatureSnapshotDao {
     @Query("SELECT * FROM token_observations WHERE mint = :mint AND timestamp BETWEEN :from AND :to ORDER BY timestamp ASC")
     suspend fun observations(mint: String, from: Long, to: Long): List<TokenObservationEntity>
 
-    @Query("SELECT * FROM token_observations WHERE mint = :mint AND source = 'pumpportal' AND priceUsd IS NOT NULL AND timestamp >= :target AND timestamp <= :latest ORDER BY timestamp ASC LIMIT 1")
+    @Query("SELECT * FROM token_observations WHERE mint = :mint AND source IN ('pumpportal', 'pumpdev') AND priceUsd IS NOT NULL AND timestamp >= :target AND timestamp <= :latest ORDER BY timestamp ASC LIMIT 1")
     suspend fun firstObservationAtOrAfter(mint: String, target: Long, latest: Long): TokenObservationEntity?
+
+    @Query("SELECT * FROM token_observations WHERE mint = :mint AND source IN ('pumpportal', 'pumpdev') AND timestamp BETWEEN :from AND :to ORDER BY timestamp ASC")
+    suspend fun liveObservations(mint: String, from: Long, to: Long): List<TokenObservationEntity>
 
     @Query("SELECT * FROM token_feature_snapshots WHERE mint = :mint AND timestamp BETWEEN :from AND :to ORDER BY timestamp ASC")
     suspend fun snapshots(mint: String, from: Long, to: Long): List<TokenFeatureSnapshotEntity>

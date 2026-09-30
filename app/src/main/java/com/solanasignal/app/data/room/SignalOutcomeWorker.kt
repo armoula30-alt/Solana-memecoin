@@ -24,8 +24,7 @@ class SignalOutcomeWorker(context: Context, params: WorkerParameters) : Coroutin
                     signal.mint, target, minOf(now, target + maxObservationLatenessMs)
                 ) ?: return@checkpointLoop
                 val observed = observation.priceUsd?.takeIf { it > 0.0 } ?: return@checkpointLoop
-                val path = db.featureSnapshotDao().observations(signal.mint, signal.timestamp, observation.timestamp)
-                    .filter { it.source == "pumpportal" }
+                val path = db.featureSnapshotDao().liveObservations(signal.mint, signal.timestamp, observation.timestamp)
                     .mapNotNull { point -> point.priceUsd?.takeIf { it > 0.0 }?.let { point.timestamp to it } }
                     .plus(signal.timestamp to entry)
                     .plus(observation.timestamp to observed)

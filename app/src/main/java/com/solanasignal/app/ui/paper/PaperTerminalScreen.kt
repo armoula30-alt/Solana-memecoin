@@ -282,7 +282,7 @@ fun PaperTerminalScreen(vm: AppViewModel) {
                     TerminalMetric("REALIZED", signedUsd(analytics.realizedPnlUsd), Modifier.weight(1f))
                     TerminalMetric("TOTAL P/L", analytics.unrealizedPnlUsd?.let { signedUsd(analytics.realizedPnlUsd + it) } ?: "UNKNOWN", Modifier.weight(1f))
                 }
-                if (!marksAreFresh && positions.isNotEmpty()) Text("Some positions lack a fresh PumpPortal trade quote; equity and unrealized P/L are UNKNOWN, not stale-price estimates.", color = WatchAmber, style = MaterialTheme.typography.labelSmall)
+                if (!marksAreFresh && positions.isNotEmpty()) Text("Some positions lack a fresh quote from the selected provider; equity and unrealized P/L are UNKNOWN, not stale-price estimates.", color = WatchAmber, style = MaterialTheme.typography.labelSmall)
                 Text("${positions.size} open positions · ${analytics.closedTrades} closed · win rate ${analytics.winRate?.let { "%.0f%%".format(it * 100) } ?: "UNKNOWN"}", color = TextMuted, style = MaterialTheme.typography.labelSmall)
             }
         }
@@ -309,7 +309,7 @@ fun PaperTerminalScreen(vm: AppViewModel) {
         items(trades.take(25), key = { "trade-${it.id}" }) { trade -> TradeHistoryRow(trade) }
 
         item {
-            Text("Market event flow · PumpPortal only", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text("Market event flow · ${market.priceSource.name}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         }
         val recentMarketTrades = market.recentTrades.takeLast(12).asReversed()
         if (recentMarketTrades.isEmpty()) item { Text("No actual trade events available. Dex snapshots are not shown as trade flow.", color = TextMuted, style = MaterialTheme.typography.bodySmall) }
@@ -373,13 +373,15 @@ private fun PositionRow(position: PaperPositionEntity, state: LiveMarketState?, 
 @Composable
 private fun TradeHistoryRow(trade: PaperTradeEntity) {
     val buy = trade.side == "PAPER_BUY"
+    val signalLagMs = trade.signalTimestampMs?.let { (trade.timestamp - it).coerceAtLeast(0L) }
     Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark), modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 7.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(if (buy) "BUY" else "SELL", color = if (buy) BuyGreen else SellRed, fontWeight = FontWeight.Bold)
             Text(trade.symbol ?: trade.mint.take(6), fontWeight = FontWeight.Medium)
             Column(horizontalAlignment = Alignment.End) {
                 Text(formatPrice(trade.fillPriceUsd), style = MaterialTheme.typography.labelSmall)
-                Text("${relativeAge(System.currentTimeMillis() - trade.timestamp)} · ${trade.marketDataSource} · ${if (trade.simulated) "SIMULATED" else "UNVERIFIED"} · fee ${formatUsd(trade.feeUsd)} · ${trade.realizedPnlUsd?.let(::signedUsd) ?: "—"}", color = TextMuted, style = MaterialTheme.typography.labelSmall)
+                Text("${relativeAge(System.currentTimeMillis() - trade.timestamp)} · ${trade.marketDataSource} · ${if (trade.simulated) "SIMULATED" else "UNVERIFIED"}", color = TextMuted, style = MaterialTheme.typography.labelSmall)
+                Text("fee ${formatUsd(trade.feeUsd)} · slip ${formatUsd(trade.slippageUsd)} · P/L ${trade.realizedPnlUsd?.let(::signedUsd) ?: "—"} · held ${trade.holdingDurationMs?.let(::relativeAge) ?: "—"} · signal ${signalLagMs?.let(::relativeAge) ?: "unlinked"}", color = TextMuted, style = MaterialTheme.typography.labelSmall)
             }
         }
     }

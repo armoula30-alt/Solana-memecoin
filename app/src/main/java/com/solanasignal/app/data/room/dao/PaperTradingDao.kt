@@ -51,6 +51,9 @@ interface PaperTradingDao {
     @Insert
     suspend fun insertTrade(value: PaperTradeEntity): Long
 
+    @Query("SELECT * FROM paper_trades WHERE id = :id LIMIT 1")
+    suspend fun tradeById(id: Long): PaperTradeEntity?
+
     @Query("DELETE FROM paper_positions")
     suspend fun clearPositions()
 

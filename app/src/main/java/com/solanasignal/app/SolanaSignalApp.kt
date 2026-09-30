@@ -15,6 +15,13 @@ class SolanaSignalApp : Application() {
         super.onCreate()
         NotificationHelper.createChannels(this)
         ServiceLocator.init(this)
+        val settings = ServiceLocator.settings(this)
+        ServiceLocator.telemetry(this).startSession(
+            appVersion = BuildConfig.VERSION_NAME,
+            buildVersion = BuildConfig.VERSION_CODE.toLong(),
+            initialSource = settings.marketFeedProvider.value.sourceId
+        )
+        ServiceLocator.telemetry(this).setTraceEnabled(settings.traceLoggingEnabled.value)
         scheduleRetentionCleanup()
         scheduleOutcomeTracking()
     }

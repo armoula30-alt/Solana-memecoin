@@ -18,7 +18,7 @@ data class LiveCandidateRank(
 class LiveCandidateRanker {
     fun rank(state: LiveMarketState, nowMs: Long): LiveCandidateRank {
         val points = state.points.filter {
-            it.source == MarketDataSource.PUMPPORTAL_TRADE &&
+            it.source in setOf(MarketDataSource.PUMPPORTAL_TRADE, MarketDataSource.PUMPDEV_TRADE) &&
                 it.timestampMs in (nowMs - 60_000L)..nowMs &&
                 (state.tradeTrackingStartedAtMs == null || it.timestampMs >= state.tradeTrackingStartedAtMs) &&
                 it.priceUsd != null
