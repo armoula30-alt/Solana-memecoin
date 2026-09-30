@@ -129,7 +129,7 @@ class LiveMarketStateRepository(
             // Dex transaction aggregates may use 5m/1h buckets, not a verified rolling 60s window.
             // Keep them out of these counters; absent live event coverage remains UNKNOWN.
             updatedAtMs = nowMs,
-            status = statusFor(old.lastTradeAtMs, if (useRestPrice && validPrice != null) nowMs else old.priceUpdatedAtMs, nowMs),
+            status = statusFor(old.lastTradeAtMs, if (useRestPrice && validPrice != null) nowMs else old.priceUpdatedAtMs, nowMs, old.tradeTrackingStartedAtMs),
             points = points
         )
         put(next)
@@ -184,7 +184,7 @@ class LiveMarketStateRepository(
                 nowMs - tick.timestampMs <= staleAfterMs &&
                 (source == MarketDataSource.MOCK || old.tradeTrackingStartedAtMs != null) &&
                 (source == MarketDataSource.MOCK || socketConnectedAtMs == null || nowMs >= socketConnectedAtMs!!)
-            ) MarketDataStatus.LIVE else statusFor(tick.timestampMs, if (validPrice != null) tick.timestampMs else old.priceUpdatedAtMs, nowMs),
+            ) MarketDataStatus.LIVE else statusFor(tick.timestampMs, if (validPrice != null) tick.timestampMs else old.priceUpdatedAtMs, nowMs, old.tradeTrackingStartedAtMs),
             points = appendPoint(old.points, point, nowMs),
             recentTrades = recent
         )
@@ -313,11 +313,11 @@ class LiveMarketStateRepository(
     private fun hasFullTradeWindow(state: LiveMarketState, nowMs: Long): Boolean =
         state.tradeTrackingStartedAtMs?.let { nowMs - it >= 60_000L } == true
 
-    private fun statusFor(lastTradeAt: Long?, lastPriceAt: Long?, nowMs: Long): MarketDataStatus = when {
+    private fun statusFor(lastTradeAt: Long?, lastPriceAt: Long?, nowMs: Long, trackingStartedAtMs: Long?): MarketDataStatus = when {
         socketState == ConnectionState.DISCONNECTED || socketState == ConnectionState.RECONNECTING || socketState == ConnectionState.CONNECTING -> MarketDataStatus.DISCONNECTED
         socketState == ConnectionState.DEGRADED -> MarketDataStatus.STALE
-        tradeTrackingStartedAtMs != null && lastTradeAt != null && nowMs - lastTradeAt <= staleAfterMs &&
-            lastTradeAt >= tradeTrackingStartedAtMs && (socketConnectedAtMs == null || lastTradeAt >= socketConnectedAtMs!!) -> MarketDataStatus.LIVE
+        trackingStartedAtMs != null && lastTradeAt != null && nowMs - lastTradeAt <= staleAfterMs &&
+            lastTradeAt >= trackingStartedAtMs && (socketConnectedAtMs == null || lastTradeAt >= socketConnectedAtMs!!) -> MarketDataStatus.LIVE
         lastPriceAt != null -> MarketDataStatus.STALE
         else -> MarketDataStatus.UNKNOWN
     }

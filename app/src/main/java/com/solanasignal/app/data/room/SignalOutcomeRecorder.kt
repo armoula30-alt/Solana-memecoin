@@ -40,7 +40,7 @@ class SignalOutcomeRecorder {
                         riskScore = signal.manipulationRiskScore,
                         dataQualityScore = signal.dataQualityScore,
                         maxGainPct = (peak.second - entry) / entry * 100.0,
-                        maxDrawdownPct = (trough.second - entry) / entry * 100.0,
+                        maxDrawdownPct = (trough - entry) / entry * 100.0,
                         timeToPeakSeconds = ((peak.first - signal.timestamp) / 1_000L).toInt().coerceAtLeast(0)
                     )
                 )

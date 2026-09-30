@@ -465,7 +465,7 @@ class ScannerOrchestrator(
             recordMarketCap(event.mint, event.timestampEpochMs, currentMarketCapUsd)
         }
 
-        analyzeAndMaybeSignal(event.mint, event.timestampEpochMs)
+        analyzeAndMaybeSignal(event.mint, event.timestampEpochMs, priceUsd)
         if (!settings.mockMode.value) {
             signalOutcomeRecorder.onLiveTrade(db, event.mint, event.timestampEpochMs, priceUsd)
         }
@@ -651,7 +651,7 @@ class ScannerOrchestrator(
     }
 
     // --- Metrics -> Safety -> Score -> Signal pipeline ----------------------
-    private suspend fun analyzeAndMaybeSignal(mint: String, nowMs: Long) {
+    private suspend fun analyzeAndMaybeSignal(mint: String, nowMs: Long, eventPriceUsd: Double?) {
         val token = db.tokenDao().getByMint(mint) ?: return
         val windows = metricsEngine.computeAll(mint, nowMs)
         val m5 = windows[300] ?: return
@@ -715,10 +715,11 @@ class ScannerOrchestrator(
         }
         db.featureSnapshotDao().insertObservation(
             TokenObservationEntity(
-                mint = mint, timestamp = nowMs, priceUsd = token.lastPriceUsd,
+                mint = mint, timestamp = nowMs, priceUsd = eventPriceUsd,
                 marketCapUsd = token.marketCapUsd, liquidityUsd = token.liquidityUsd,
                 buyVolumeUsd = m5.buyVolumeUsd, sellVolumeUsd = m5.sellVolumeUsd,
-                buyers = m5.uniqueBuyers, sellers = m5.uniqueSellers, source = token.source
+                buyers = m5.uniqueBuyers, sellers = m5.uniqueSellers,
+                source = if (settings.mockMode.value) "mock" else "pumpportal"
             )
         )
         db.featureSnapshotDao().insertSnapshot(
