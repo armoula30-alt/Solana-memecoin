@@ -50,7 +50,7 @@ class LiveShadowCoordinator(private val db: AppDatabase) {
         _bObservations.value += 1
         if (bSignal == "B_SHADOW_SIGNAL") _bShadowSignals.value += 1
         if (previous != b.state.name) {
-            db.systemEventDao().insert(SystemEventEntity(now, "B_STATE_CHANGE", "evaluationId=$evaluationId opportunityId=$opportunityId mint=${token.mint} from=${previous ?: "UNKNOWN"} to=${b.state.name} reason=${bReasons.joinToString("|")}"))
+            db.systemEventDao().insert(SystemEventEntity(timestamp = now, category = "B_STATE_CHANGE", message = "evaluationId=$evaluationId opportunityId=$opportunityId mint=${token.mint} from=${previous ?: "UNKNOWN"} to=${b.state.name} reason=${bReasons.joinToString("|")}"))
         }
         if (bSignal == "B_SHADOW_SIGNAL" && state.priceUsd != null && !state.isStale(now)) {
             db.shadowPaperDao().insert(
@@ -69,10 +69,10 @@ class LiveShadowCoordinator(private val db: AppDatabase) {
                 )
             )
             _shadowEntries.value += 1
-            db.systemEventDao().insert(SystemEventEntity(now, "PAPER_SHADOW_ENTRY", "evaluationId=$evaluationId opportunityId=$opportunityId mint=${token.mint} entryPriceUsd=${state.priceUsd}"))
+            db.systemEventDao().insert(SystemEventEntity(timestamp = now, category = "PAPER_SHADOW_ENTRY", message = "evaluationId=$evaluationId opportunityId=$opportunityId mint=${token.mint} entryPriceUsd=${state.priceUsd}"))
         }
-        db.systemEventDao().insert(SystemEventEntity(now, "B_EVALUATION", "evaluationId=$evaluationId eventId=$eventId opportunityId=$opportunityId mint=${token.mint} state=${b.state.name} signal=$bSignal quality=${b.signalQuality ?: "UNKNOWN"} confidence=${b.dataConfidence}"))
-        db.systemEventDao().insert(SystemEventEntity(now, bSignal, "evaluationId=$evaluationId eventId=$eventId opportunityId=$opportunityId mint=${token.mint} state=${b.state.name} reason=${bReasons.joinToString("|")}"))
+        db.systemEventDao().insert(SystemEventEntity(timestamp = now, category = "B_EVALUATION", message = "evaluationId=$evaluationId eventId=$eventId opportunityId=$opportunityId mint=${token.mint} state=${b.state.name} signal=$bSignal quality=${b.signalQuality ?: "UNKNOWN"} confidence=${b.dataConfidence}"))
+        db.systemEventDao().insert(SystemEventEntity(timestamp = now, category = bSignal, message = "evaluationId=$evaluationId eventId=$eventId opportunityId=$opportunityId mint=${token.mint} state=${b.state.name} reason=${bReasons.joinToString("|")}"))
         return b
     }
 
