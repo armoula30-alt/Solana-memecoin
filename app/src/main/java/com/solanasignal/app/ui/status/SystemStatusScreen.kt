@@ -51,6 +51,10 @@ fun SystemStatusScreen(vm: AppViewModel) {
     val tokenDiagnostics by vm.tokenDiagnostics.collectAsState()
     val dexEnriched by vm.dexScreenerEnrichedCount.collectAsState()
     val tradesReceived by vm.tradesReceivedCount.collectAsState()
+    val bObservations by vm.advancedBObservations.collectAsState()
+    val bShadowSignals by vm.advancedBShadowSignals.collectAsState()
+    val shadowPaperEntries by vm.shadowPaperEntries.collectAsState()
+    val abObservations by vm.abObservations.collectAsState()
     val mockMode by vm.settings.mockMode.collectAsState()
     val sdf = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
     var diagnosticsExpanded by remember { mutableStateOf(false) }
@@ -86,6 +90,9 @@ fun SystemStatusScreen(vm: AppViewModel) {
                     StatusRow("Metrics updates", metricsUpdates.toString())
                     StatusRow("Signal evaluations", signalEvaluations.toString())
                     StatusRow("Signals emitted", signalsEmitted.toString())
+                    StatusRow("A/B observations", bObservations.toString())
+                    StatusRow("B shadow signals", bShadowSignals.toString())
+                    StatusRow("B shadow paper entries", shadowPaperEntries.toString())
                     StatusRow("Evaluations rejected", evaluationsRejected.toString())
                     StatusRow("Last rejection reason", lastRejectionReason ?: "UNKNOWN")
                     StatusRow("DexScreener enriched (last pass)", if (mockMode) "N/A (mock mode)" else dexEnriched.toString())
@@ -105,6 +112,16 @@ fun SystemStatusScreen(vm: AppViewModel) {
         if (diagnosticsExpanded) {
             items(tokenDiagnostics.take(20), key = { it.mint }) { diagnostic ->
                 TokenDiagnosticsCard(diagnostic, sdf)
+            }
+        }
+        item { Text("Recent A/B Shadow Observations", style = MaterialTheme.typography.titleMedium) }
+        items(abObservations.take(20), key = { it.evaluationId }) { observation ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(10.dp)) {
+                    Text("${observation.engine} · ${observation.mint} · ${observation.state}", fontWeight = FontWeight.Bold)
+                    Text("${observation.signal} | quality ${observation.signalQuality ?: "UNKNOWN"} | confidence ${observation.dataConfidence ?: "UNKNOWN"}", style = MaterialTheme.typography.bodySmall)
+                    Text("source ${observation.source ?: "UNKNOWN"} | freshness ${observation.freshness} | stale ${observation.stale}", style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
 

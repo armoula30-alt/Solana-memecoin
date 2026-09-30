@@ -22,9 +22,14 @@ import com.solanasignal.app.data.room.entities.*
         PaperPositionEntity::class,
         PaperTradeEntity::class,
         PaperWatchlistEntity::class,
-        SystemEventEntity::class
+        SystemEventEntity::class,
+        MarketEventEntity::class,
+        ABObservationEntity::class,
+        ABOutcomeEntity::class,
+        ShadowPaperEntryEntity::class,
+        DataQualityEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -38,6 +43,11 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun featureSnapshotDao(): FeatureSnapshotDao
     abstract fun paperTradingDao(): PaperTradingDao
     abstract fun systemEventDao(): SystemEventDao
+    abstract fun marketEventDao(): MarketEventDao
+    abstract fun abObservationDao(): ABObservationDao
+    abstract fun abOutcomeDao(): ABOutcomeDao
+    abstract fun shadowPaperDao(): ShadowPaperDao
+    abstract fun dataQualityDao(): DataQualityDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null

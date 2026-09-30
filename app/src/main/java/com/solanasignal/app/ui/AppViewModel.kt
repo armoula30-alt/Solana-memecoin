@@ -13,6 +13,8 @@ import com.solanasignal.app.data.room.entities.PaperPortfolioEntity
 import com.solanasignal.app.data.room.entities.PaperPositionEntity
 import com.solanasignal.app.data.room.entities.PaperTradeEntity
 import com.solanasignal.app.data.room.entities.PaperWatchlistEntity
+import com.solanasignal.app.data.room.entities.ABObservationEntity
+import com.solanasignal.app.data.room.entities.ShadowPaperEntryEntity
 import com.solanasignal.app.domain.paper.PaperTradeResult
 import com.solanasignal.app.domain.paper.PaperTradingEngine
 import com.solanasignal.app.domain.paper.AutoPaperConfig
@@ -72,6 +74,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val tokenDiagnostics = orchestrator.tokenDiagnostics
     val dexScreenerEnrichedCount = orchestrator.dexScreenerEnrichedCount
     val tradesReceivedCount = orchestrator.tradesReceivedCount
+    val advancedBObservations = orchestrator.advancedBObservations
+    val advancedBShadowSignals = orchestrator.advancedBShadowSignals
+    val shadowPaperEntries = orchestrator.shadowPaperEntries
 
     val tokens: StateFlow<List<TokenEntity>> =
         db.tokenDao().observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -81,6 +86,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     val systemEvents: StateFlow<List<SystemEventEntity>> =
         db.systemEventDao().observeRecent().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val abObservations: StateFlow<List<ABObservationEntity>> =
+        db.abObservationDao().recent().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val openShadowPaperEntries: StateFlow<List<ShadowPaperEntryEntity>> =
+        db.shadowPaperDao().open().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val paperPortfolio: StateFlow<PaperPortfolioEntity?> =
         db.paperTradingDao().observePortfolio().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)

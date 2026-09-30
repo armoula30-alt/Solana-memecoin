@@ -13,6 +13,7 @@ import com.solanasignal.app.data.settings.BatteryMode
 import com.solanasignal.app.data.settings.SettingsRepository
 import com.solanasignal.app.domain.metrics.MetricsEngine
 import com.solanasignal.app.domain.metrics.WindowMetrics
+import com.solanasignal.app.domain.ab.LiveShadowCoordinator
 import com.solanasignal.app.domain.mc.McObservation
 import com.solanasignal.app.domain.mc.McTrendPressureEngine
 import com.solanasignal.app.domain.evidence.SignalEvidenceEngine
@@ -84,6 +85,7 @@ class ScannerOrchestrator(
     private val solPriceProvider = SolPriceProvider()
     private val dexScreenerClient = DexScreenerClient()
     private val codeCraftClient = CodeCraftClient()
+    private val liveShadowCoordinator = LiveShadowCoordinator(db)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var mockSource: MockEventSource? = null
@@ -98,6 +100,8 @@ class ScannerOrchestrator(
     private val trackedMints = ConcurrentHashMap.newKeySet<String>()
     private val discoveredMints = ConcurrentHashMap.newKeySet<String>()
     private val lastActivityByMint = ConcurrentHashMap<String, Long>()
+    private val lastReceiveAtByMint = ConcurrentHashMap<String, Long>()
+    private val lastEventIdByMint = ConcurrentHashMap<String, String>()
     private val lastAiAnalysisByMint = ConcurrentHashMap<String, Long>()
     private var evictionJob: Job? = null
 
@@ -199,6 +203,10 @@ class ScannerOrchestrator(
 
     private val _tradesReceivedCount = MutableStateFlow(0)
     val tradesReceivedCount: StateFlow<Int> = _tradesReceivedCount.asStateFlow()
+
+    val advancedBObservations: StateFlow<Int> = liveShadowCoordinator.bObservations
+    val advancedBShadowSignals: StateFlow<Int> = liveShadowCoordinator.bShadowSignals
+    val shadowPaperEntries: StateFlow<Int> = liveShadowCoordinator.shadowEntries
 
     val solUsdPrice: StateFlow<Double?> get() = solPriceProvider.priceUsd
 
@@ -438,6 +446,8 @@ class ScannerOrchestrator(
             "PUMPDEV_TRADE_RECEIVED",
             "mint=${trade.mint} side=${trade.side.name} priceSol=${trade.priceSol ?: "UNKNOWN"} solAmount=${trade.solAmount ?: "UNKNOWN"} quoteAmount=${trade.quoteAmount ?: "UNKNOWN"} tokenAmount=${trade.tokenAmount ?: "UNKNOWN"} signature=${trade.signature ?: "UNKNOWN"} timestampEpochMs=${trade.timestampEpochMs}"
         )
+        lastReceiveAtByMint[trade.mint] = nowMs
+        lastEventIdByMint[trade.mint] = trade.signature ?: trade.dedupeKey()
         handleTrade(trade)
         _normalizedTradeCount.value += 1
         logSystemEvent("PUMPDEV_TRADE_NORMALIZED", "PumpDev trade normalized for ${trade.mint}")
@@ -517,6 +527,28 @@ class ScannerOrchestrator(
     // --- 11. TRADE TRACKING + 12. DUPLICATE PROTECTION ----------------------
     private suspend fun handleTrade(event: NormalizedTradeEvent) {
         val dedupeKey = event.dedupeKey()
+        val receiveTimestamp = lastReceiveAtByMint[event.mint] ?: System.currentTimeMillis()
+        db.marketEventDao().insert(
+            MarketEventEntity(
+                eventId = dedupeKey,
+                timestamp = event.timestampEpochMs,
+                receiveTimestamp = receiveTimestamp,
+                source = if (settings.mockMode.value) "mock" else "pumpdev",
+                mint = event.mint,
+                eventType = "NORMALIZED_TRADE",
+                normalizedPayload = org.json.JSONObject(mapOf(
+                    "mint" to event.mint,
+                    "side" to event.side.name,
+                    "trader" to event.trader,
+                    "tokenAmount" to event.tokenAmount,
+                    "solAmount" to event.solAmount,
+                    "quoteAmount" to event.quoteAmount,
+                    "priceSol" to event.priceSol,
+                    "signature" to event.signature,
+                    "timestampEpochMs" to event.timestampEpochMs
+                ).mapValues { it.value ?: org.json.JSONObject.NULL }).toString()
+            )
+        )
         if (db.tradeDao().existsByDedupeKey(dedupeKey) > 0) {
             incrementRuntimeCounter(_deduplicatedTrades)
             return // never process the same trade twice
@@ -990,6 +1022,26 @@ class ScannerOrchestrator(
         )
         if (buyDecision.type == SignalType.REJECTED) {
             recordRejection(buyDecision.reasons.firstOrNull { it.startsWith("Rejected") } ?: buyDecision.reasons.firstOrNull())
+        }
+        val shadowEventId = lastEventIdByMint[mint] ?: "state:$mint:$nowMs"
+        logSystemEvent(
+            "A_EVALUATION",
+            "eventId=$shadowEventId opportunityId=opportunity:$mint mint=$mint state=${analyzedToken.lifecycle} signal=${buyDecision.type.name} score=${score.total}"
+        )
+        try {
+            liveShadowCoordinator.evaluate(
+                token = analyzedToken,
+                windows = windows,
+                eventId = shadowEventId,
+                stateTimestamp = lastActivityByMint[mint] ?: nowMs,
+                receiveTimestamp = lastReceiveAtByMint[mint] ?: nowMs,
+                baselineState = analyzedToken.lifecycle,
+                baselineSignal = if (buyDecision.shouldNotify) "A_SIGNAL" else "A_NO_SIGNAL",
+                baselineScore = score.total,
+                baselineReasons = buyDecision.reasons
+            )
+        } catch (e: Exception) {
+            logSystemEvent("AB_SHADOW_ERROR", "mint=$mint reason=${e.message ?: e.javaClass.simpleName}")
         }
         lastSignalTypeByMint[mint] = buyDecision.type.name
         lastSignalReasonByMint[mint] = buyDecision.reasons.firstOrNull() ?: "UNKNOWN"
